@@ -1,16 +1,39 @@
 {
+  "version": "5.1",
   "network": "hardhat",
   "chainId": 31337,
   "deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "timestamp": "2026-03-18T15:09:21.054Z",
   "contracts": {
-    "DChatToken": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-    "DChatStaking": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
+    "DChatStablecoin": {
+      "address": "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
+      "name": "DecentraChat Stablecoin",
+      "symbol": "DCHAT"
+    },
+    "DGovToken": {
+      "address": "0x0165878A594ca255338adfa4d48449f69242Eb8F",
+      "name": "DecentraChat Governance",
+      "symbol": "DGOV"
+    },
+    "DividendPool": {
+      "address": "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707"
+    },
+    "DGovGovernance": {
+      "address": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853"
+    }
+  },
+  "collateral": {
+    "USDC": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "USDT": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
   },
   "config": {
-    "costPerByte": "1000000000000",
-    "lockPeriod": 604800,
     "founderAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-    "treasuryAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-  },
-  "timestamp": "2026-03-17T22:17:58.634Z"
+    "reserveWallet": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "founderVesting": "30% (30M DGOV) — 10M/12mo, 10M/24mo, 10M/36mo",
+    "marketingAllocation": "10% (10M DGOV) — 180d lock + 180d linear per transfer",
+    "auctionAllocation": "60% (60M DGOV) — 6 phases over 36 months",
+    "dividendSplit": "70% nodes / 20% dividendPool / 10% reserve",
+    "quorum": "60% + 1 of total emitted (minus burned)",
+    "timelock": "48 hours"
+  }
 }
