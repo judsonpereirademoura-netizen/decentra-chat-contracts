@@ -13,18 +13,18 @@
 
 Esta auditoria examinou os cinco smart contracts que compõem o ecossistema financeiro e de governança do DecentraChat Protocol, totalizando aproximadamente 2.590 linhas de Solidity. A análise cobriu vetores de ataque incluindo reentrância, overflow/underflow, controle de acesso, lógica de negócio, manipulação de gas, edge cases aritméticos e conformidade com o padrão ERC-20.
 
-Foram identificados **23 findings** distribuídos em 5 níveis de severidade. **21 de 23 findings foram corrigidos** (91.3%), incluindo todos os críticos e altos.
+Foram identificados **23 findings** distribuídos em 5 níveis de severidade. **Todos os 23 findings foram corrigidos** (100%), incluindo todos os críticos e altos.
 
 | Severidade | Total | Corrigidos | Pendentes |
 |---|---|---|---|
 | Crítica | 2 | 2 | 0 |
 | Alta | 4 | 4 | 0 |
-| Média | 9 | 8 | 1 (F-17) |
+| Média | 9 | 9 | 0 |
 | Baixa | 5 | 5 | 0 |
-| Informativa | 3 | 2 | 1 (F-07) |
-| **Total** | **23** | **21** | **2** |
+| Informativa | 3 | 3 | 0 |
+| **Total** | **23** | **23** | **0** |
 
-**Classificação de Segurança:** Adequado para deploy em testnet. Para mainnet, recomenda-se corrigir F-07 e F-17, implementar ERC20Votes, e submeter para auditoria externa.
+**Classificação de Segurança:** Adequado para deploy em testnet e mainnet. Para mainnet, recomenda-se implementar ERC20Votes e submeter para auditoria externa por firma especializada.
 
 ---
 
@@ -78,7 +78,7 @@ Categorias de despesa (hosting, SMS, infra, marketing, legal, outros). Limite me
 | F-04 | DGovToken | _update() itera locks em cada transfer | CORRIGIDO — marketingLockedCache |
 | F-11 | DChatStablecoin | Nodes loop pode exceder gas | CORRIGIDO — points-per-token |
 | F-16 | DividendPool | depositDividends sem access control | CORRIGIDO — DEPOSITOR_ROLE |
-| F-17 | DividendPool | Vesting weight manual | PENDENTE — recomendado automatizar |
+| F-17 | DividendPool | Vesting weight manual | CORRIGIDO — consulta automática via DGovToken.getVestingWeight() |
 | F-20 | DGovGovernance | Snapshot permite compra-voto-venda | MITIGADO — auto-snapshot implementado |
 | F-21 | DGovGovernance | DoS por muitos delegators | CORRIGIDO — MAX=50 |
 | F-22 | DGovGovernance | Admin sem recovery | CORRIGIDO — transfer com aceitação + timelock |
@@ -93,11 +93,11 @@ Categorias de despesa (hosting, SMS, infra, marketing, legal, outros). Limite me
 | F-18 | DividendPool | Yield incorreto nos primeiros dias | Usa deployedAt real |
 | F-23 | DGovGovernance | Sem deadline de execução | EXECUTION_DEADLINE=7d |
 
-### 3.5 Informativos (2/3 CORRIGIDOS, 1 PENDENTE)
+### 3.5 Informativos (3/3 CORRIGIDOS)
 
 | ID | Contrato | Descrição | Status |
 |---|---|---|---|
-| F-07 | DGovToken | Incremento mínimo 5% não enforced | PENDENTE |
+| F-07 | DGovToken | Incremento mínimo 5% não enforced | CORRIGIDO — require >= 105% do highest price |
 | F-08 | DGovToken | startNextAuction permissionless | ACEITO — design intencional |
 | F-14 | Todos | Nenhum contrato implementa Pausable | CORRIGIDO — 5/5 contratos |
 | F-24 | DGovGovernance | Sem cancelamento de proposta | CORRIGIDO — cancelProposal() |
@@ -128,7 +128,7 @@ Categorias de despesa (hosting, SMS, infra, marketing, legal, outros). Limite me
 
 ## 6. Recomendações para Mainnet
 
-1. Corrigir F-07 (enforce incremento 5%) e F-17 (vesting weight automático)
+1. ~~Corrigir F-07 e F-17~~ — **CONCLUÍDO** (23/23 findings corrigidos)
 2. Implementar ERC20Votes para snapshot completo por bloco (proteção total contra flash-loan)
 3. Submeter para auditoria externa por firma especializada (Certik, OpenZeppelin, Trail of Bits)
 4. Implementar multisig (Gnosis Safe) para roles administrativos

@@ -3,7 +3,7 @@
 **Projeto:** DecentraChat Smart Contracts v5.0  
 **Autor:** The Architect — AGI-Core  
 **Data:** 18 de março de 2026  
-**Total de Findings:** 23 | **Corrigidos:** 21 | **Pendentes:** 2
+**Total de Findings:** 23 | **Corrigidos:** 23 | **Pendentes:** 0
 
 ---
 
@@ -37,12 +37,12 @@
 
 ---
 
-### Findings PENDENTES (2/23)
+### Findings PENDENTES (0/23) — TODOS CORRIGIDOS
 
-| ID | Severidade | Contrato | Descrição | Prioridade |
+| ID | Severidade | Contrato | Descrição | Status |
 |---|---|---|---|---|
-| F-07 | Info | DGovToken | Incremento mínimo 5% não enforced | Sprint Final |
-| F-17 | Média | DividendPool | Vesting weight manual pode causar duplicação | Sprint Final |
+| F-07 | Info | DGovToken | Incremento mínimo 5% não enforced | ✅ CORRIGIDO — require >= 105% do highest price |
+| F-17 | Média | DividendPool | Vesting weight manual pode causar duplicação | ✅ CORRIGIDO — consulta automática via DGovToken.getVestingWeight() |
 
 **Nota sobre F-20 (Snapshot):** O sistema atual já implementa snapshot via `balanceSnapshots` no momento da criação da proposta e auto-snapshot no `castVote`. Isso mitiga o ataque de compra-voto-venda na maioria dos cenários. Uma implementação completa com ERC20Votes seria ideal para mainnet mas requer refatoração significativa do DGovToken.
 
@@ -70,12 +70,12 @@
 | F-13 | Collateralization ratio corrigido (desconta adminMint) | CONCLUÍDO |
 | F-18 | estimateAnnualYield dinâmico com deployedAt | CONCLUÍDO |
 
-### Sprint Final — Pendente
+### Sprint Final — CONCLUÍDO
 
-| ID | Tarefa | Estimativa |
+| ID | Tarefa | Status |
 |---|---|---|
-| F-07 | Enforce incremento mínimo 5% no placeBid | 30min |
-| F-17 | Vesting weight automático via interface IDGovToken | 1h |
+| F-07 | Enforce incremento mínimo 5% no placeBid | CONCLUÍDO |
+| F-17 | Vesting weight automático via interface IDGovToken | CONCLUÍDO |
 
 ---
 
@@ -96,11 +96,11 @@
 
 ## Próximos Passos Recomendados
 
-1. **Corrigir F-07 e F-17** — últimos 2 findings pendentes (estimativa: 1.5h)
+1. ~~Corrigir F-07 e F-17~~ — **CONCLUÍDO** (23/23 findings corrigidos)
 2. **Deploy em Testnet Polygon Amoy** — scripts automatizados com verificação Polygonscan
 3. **Auditoria externa** — submeter para firma especializada antes do mainnet
 4. **Integração real com MetaMask** — conectar frontend aos contratos na testnet
 
 ---
 
-*Cronograma atualizado em 18/03/2026. 21 de 23 findings corrigidos (91.3%).*
+*Cronograma atualizado em 18/03/2026. **23 de 23 findings corrigidos (100%)**.*
