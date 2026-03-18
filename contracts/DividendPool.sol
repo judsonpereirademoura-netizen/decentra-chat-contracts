@@ -12,6 +12,10 @@ import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
 interface IDGovTokenForDividend {
     function balanceOf(address account) external view returns (uint256);
     function totalSupply() external view returns (uint256);
+    function getVestingWeight(address holder) external view returns (uint256); // [F-17]
+    function founder() external view returns (address); // [F-17]
+    function totalMarketingDistributed() external view returns (uint256); // [F-17]
+    function FOUNDER_ALLOCATION() external view returns (uint256); // [F-17]
 }
 
 /**
@@ -237,22 +241,42 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
      * @notice Get the effective dividend weight for a holder.
      * @dev Weight = balanceOf($DGOV) + vestingWeight
      */
+    /**
+     * @dev [F-17] Agora consulta automaticamente o DGovToken.getVestingWeight()
+     *      ao invés de depender de vestingWeight manual.
+     *      Fallback: se o DGovToken retornar 0 mas houver vestingWeight manual, usa o manual.
+     */
     function getHolderWeight(address holder) public view returns (uint256) {
-        return dgovToken.balanceOf(holder) + vestingWeight[holder];
+        uint256 balance = dgovToken.balanceOf(holder);
+        // [F-17] Consulta automática do vesting weight do DGovToken
+        uint256 autoWeight = dgovToken.getVestingWeight(holder);
+        uint256 manualWeight = vestingWeight[holder];
+        // Usa o maior entre automático e manual (para retrocompatibilidade)
+        uint256 effectiveWeight = autoWeight > manualWeight ? autoWeight : manualWeight;
+        return balance + effectiveWeight;
     }
 
     /**
      * @notice Get the total dividend weight across all holders.
      */
     function _getTotalDividendWeight() internal view returns (uint256) {
-        // [F-15] CORRIGIDO: Descontar tokens inativos no contrato DGovToken
-        // O contrato DGovToken segura: auction tokens + unvested founder/marketing tokens
-        // Auction tokens NÃO devem contar para dividendos (nunca podem claim)
-        // Unvested tokens contam via vestingWeight separadamente
-        // Fórmula: (totalSupply - balanceOf(DGovToken_contract)) + totalVestingWeight
-        // Isso dá: tokens em circulação real + peso de vesting
+        // [F-15] Descontar tokens inativos no contrato DGovToken
+        // [F-17] Agora calcula vesting weight automático:
+        //   - Founder: FOUNDER_ALLOCATION - tokens já claimed (via getVestingWeight)
+        //   - Marketing: totalMarketingDistributed (tokens locked com prestadores)
+        // Fórmula: circulatingSupply + max(autoVestingTotal, manualTotalVestingWeight)
         uint256 circulatingSupply = dgovToken.totalSupply() - dgovToken.balanceOf(dgovTokenAddress);
-        return circulatingSupply + totalVestingWeight;
+        
+        // Calcular vesting weight automático total
+        // Founder vesting weight
+        uint256 founderAutoWeight = dgovToken.getVestingWeight(dgovToken.founder());
+        // Marketing: tokens distribuídos para prestadores (estão locked)
+        uint256 marketingAutoWeight = dgovToken.totalMarketingDistributed();
+        uint256 autoTotal = founderAutoWeight + marketingAutoWeight;
+        
+        // Usa o maior entre automático e manual (retrocompatibilidade)
+        uint256 effectiveTotalVesting = autoTotal > totalVestingWeight ? autoTotal : totalVestingWeight;
+        return circulatingSupply + effectiveTotalVesting;
     }
 
     function getTotalDividendWeight() external view returns (uint256) {

@@ -1145,8 +1145,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DividendPool.sol": {
-      "lastModificationDate": 1773843525707,
-      "contentHash": "8b5953a0984863f9b9504f71fc7c6e9a",
+      "lastModificationDate": 1773844515797,
+      "contentHash": "f03b7d06750b9de57bb87ba51ad8cab7",
       "sourceName": "contracts/DividendPool.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -1187,8 +1187,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DGovToken.sol": {
-      "lastModificationDate": 1773843317226,
-      "contentHash": "0de74f93b82927b5e0e4900106ddd244",
+      "lastModificationDate": 1773844421988,
+      "contentHash": "fb326dda37448dd372f51a6e7a314a6f",
       "sourceName": "contracts/DGovToken.sol",
       "solcConfig": {
         "version": "0.8.24",

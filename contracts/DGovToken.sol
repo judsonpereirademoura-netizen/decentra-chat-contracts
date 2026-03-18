@@ -578,14 +578,12 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         // Enforce minimum price: 0.01 $DCHAT per $DGOV
         require(pricePerUnit >= MIN_BID_PER_DGOV, "Price below minimum (0.01 DCHAT/DGOV)");
 
-        // Enforce 5% increment over highest price (if there are existing bids)
-        if (auction.highestPricePerUnit > 0) {
-            // New bids can match or exceed the highest, but if they want to be THE highest,
-            // they must be at least 5% above. Bids at or below current highest are still valid
-            // (they fill from highest to lowest), but to SET a new highest, need 5% increment.
-            // Actually, for fractional: all bids are valid, but we track highest for reference.
-            // The 5% rule applies only to prevent penny-increment on the SAME price tier.
-            // We allow any price >= MIN_BID_PER_DGOV, sorting happens at finalization.
+        // [F-07] Enforce 5% increment: se o bid quer superar o highest price atual,
+        // deve ser pelo menos 5% maior. Bids abaixo ou iguais ao highest são permitidos
+        // (serão preenchidos normalmente do maior ao menor na finalização).
+        if (auction.highestPricePerUnit > 0 && pricePerUnit > auction.highestPricePerUnit) {
+            uint256 minIncrement = (auction.highestPricePerUnit * 105) / 100; // 5% acima
+            require(pricePerUnit >= minIncrement, "New highest bid must be >= 5% above current highest");
         }
 
         // Calculate total cost
