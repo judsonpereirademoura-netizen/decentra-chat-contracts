@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
 
 /**
  * @title DGovGovernance — Advanced Governance for DecentraChat
@@ -22,7 +23,7 @@ interface IDGovToken {
     function founder() external view returns (address);
 }
 
-contract DGovGovernance is ReentrancyGuard {
+contract DGovGovernance is ReentrancyGuard, Pausable {
 
     // =========================================================================
     // CONSTANTS
@@ -161,6 +162,18 @@ contract DGovGovernance is ReentrancyGuard {
     }
 
     // =========================================================================
+    // [F-14] CIRCUIT BREAKER
+    // =========================================================================
+
+    function pause() external onlyAdmin {
+        _pause();
+    }
+
+    function unpause() external onlyAdmin {
+        _unpause();
+    }
+
+    // =========================================================================
     // TARGET WHITELIST [F-19]
     // =========================================================================
 
@@ -264,7 +277,7 @@ contract DGovGovernance is ReentrancyGuard {
         uint8 proposalType,
         bytes calldata executionData,
         address executionTarget
-    ) external returns (uint256) {
+    ) external whenNotPaused returns (uint256) {
         _validateProposer(msg.sender, proposalType, title, description);
 
         proposalCount++;
@@ -297,7 +310,7 @@ contract DGovGovernance is ReentrancyGuard {
         require(bytes(d).length > 0 && bytes(d).length <= 5000, "Bad desc");
     }
 
-    function castVote(uint256 pid, uint8 support) external {
+    function castVote(uint256 pid, uint8 support) external whenNotPaused {
         ProposalCore storage c = proposalCores[pid];
         require(c.proposer != address(0), "No proposal");
         require(block.timestamp >= c.startTime && block.timestamp < c.endTime, "Not voting period");
@@ -356,7 +369,7 @@ contract DGovGovernance is ReentrancyGuard {
         emit ProposalQueued(pid, c.timelockEnd);
     }
 
-    function executeProposal(uint256 pid) external nonReentrant {
+    function executeProposal(uint256 pid) external nonReentrant whenNotPaused {
         ProposalCore storage c = proposalCores[pid];
         require(!c.executed && c.timelockEnd > 0, "Cannot execute");
         require(block.timestamp >= c.timelockEnd, "Timelock active");

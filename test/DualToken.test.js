@@ -157,6 +157,9 @@ describe("DecentraChat Dual-Token System v3.0", function () {
       it("Should process message and distribute fees (70/20/10)", async function () {
         await dchat.connect(founder).registerNode(node1.address, ethers.parseEther("100"));
 
+        // [F-10] User must approve relayer allowance before messaging
+        await dchat.connect(user1).approveRelayerAllowance(ethers.parseEther("1000"));
+
         const fee = await dchat.calculateFee(1000, 0); // 1000 bytes text
         await dchat.connect(relayer).processMessage(user1.address, user2.address, 1000, 0);
 

@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
 
 /**
  * @dev Interface para consultar o endereço do contrato DGovToken [F-15]
@@ -34,7 +35,7 @@ interface IDGovTokenForDividend {
  *     - Marketing: 10M de peso desde dia 1 (mesmo antes do unlock)
  *     - Compradores de leilão: peso = saldo na carteira
  */
-contract DividendPool is AccessControl, ReentrancyGuard {
+contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
 
     // =========================================================================
     // ROLES [F-16]
@@ -81,6 +82,7 @@ contract DividendPool is AccessControl, ReentrancyGuard {
     // =========================================================================
     uint256 public totalFromMessaging;   // 20% das taxas de mensagem
     uint256 public totalFromAuctions;    // 100% da receita dos leilões
+    uint256 public deployedAt;           // [F-18] Timestamp de deploy para yield calculation
 
     // =========================================================================
     // EVENTS
@@ -105,6 +107,7 @@ contract DividendPool is AccessControl, ReentrancyGuard {
         dchatToken = IERC20(_dchatToken);
         dgovToken = IDGovTokenForDividend(_dgovToken);
         dgovTokenAddress = _dgovToken; // [F-15]
+        deployedAt = block.timestamp; // [F-18]
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(DEPOSITOR_ROLE, _admin); // [F-16] Admin can deposit initially
@@ -157,7 +160,7 @@ contract DividendPool is AccessControl, ReentrancyGuard {
     /**
      * @notice Deposit $DCHAT dividends from messaging fees (20% of each message).
      */
-    function depositDividends(uint256 amount) external onlyRole(DEPOSITOR_ROLE) { // [F-16]
+    function depositDividends(uint256 amount) external onlyRole(DEPOSITOR_ROLE) whenNotPaused { // [F-16]
         _depositInternal(amount, "messaging");
         totalFromMessaging += amount;
     }
@@ -196,7 +199,7 @@ contract DividendPool is AccessControl, ReentrancyGuard {
     /**
      * @notice Claim pending dividends for the caller.
      */
-    function claimDividends() external nonReentrant {
+    function claimDividends() external nonReentrant whenNotPaused {
         _updateDividends(msg.sender);
 
         uint256 amount = pendingDividends[msg.sender];
@@ -212,6 +215,18 @@ contract DividendPool is AccessControl, ReentrancyGuard {
         );
 
         emit DividendsClaimed(msg.sender, amount, block.timestamp);
+    }
+
+    // =========================================================================
+    // [F-14] CIRCUIT BREAKER
+    // =========================================================================
+
+    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
     }
 
     // =========================================================================
@@ -314,8 +329,13 @@ contract DividendPool is AccessControl, ReentrancyGuard {
         uint256 totalWeight = _getTotalDividendWeight();
         if (totalWeight == 0 || totalDividendsDeposited == 0) return 0;
 
+        // [F-18] Usar tempo real ao invés de hardcoded 30 dias
+        uint256 elapsed = block.timestamp - deployedAt;
+        if (elapsed < 1 days) elapsed = 1 days; // Mínimo 1 dia para evitar divisão por zero
+
         uint256 shareRatio = (weight * PRECISION) / totalWeight;
-        return (totalDividendsDeposited * shareRatio * 365) / (PRECISION * 30);
+        uint256 holderShare = (totalDividendsDeposited * shareRatio) / PRECISION;
+        return (holderShare * 365 days) / elapsed;
     }
 
     // =========================================================================

@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
 
 /**
  * @title DChatStablecoin ($DCHAT)
@@ -23,7 +24,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  *   - Gas: Account Abstraction (ERC-4337) — gas pago em $DCHAT, invisível ao usuário
  *   - Settlement: Individual em tempo real (transparência máxima)
  */
-contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard {
+contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard, Pausable {
 
     // =========================================================================
     // ROLES
@@ -82,17 +83,31 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     // ADDRESSES
     // =========================================================================
     address public dividendPool;     // Smart contract de dividendos $DGOV
-    address public reserveWallet;    // Wallet da reserva operacional
+    address public reserveWallet;    // Wallet da reserva operacional (contrato ReserveWallet)
     address public founder;          // Wallet do fundador
 
     // =========================================================================
-    // NODE REGISTRY
+    // [F-10] RELAYER ALLOWANCE — Usuário pré-aprova limite diário
     // =========================================================================
+    mapping(address => uint256) public relayerDailyLimit;    // Limite diário aprovado pelo user
+    mapping(address => uint256) public relayerDailySpent;    // Gasto hoje pelo relayer
+    mapping(address => uint256) public relayerLastResetDay;  // Dia do último reset
+
+    event RelayerAllowanceSet(address indexed user, uint256 dailyLimit);
+    event RelayerAllowanceSpent(address indexed user, uint256 amount, uint256 remaining);
+
+    // =========================================================================
+    // [F-11] NODE REGISTRY — Points-per-token (sem loop na distribuição)
+    // =========================================================================
+    uint256 private constant NODE_PRECISION = 1e36;
+    uint256 public nodeRewardPerToken;     // Acumulador global
+    uint256 public nodeTotalDistributed;   // Total distribuído all-time
+
     struct Node {
         address wallet;
         uint256 stake;
         uint256 totalEarned;
-        uint256 pendingRewards;
+        uint256 rewardDebt;       // [F-11] Snapshot do rewardPerToken no momento do registro
         bool active;
         uint256 registeredAt;
     }
@@ -202,7 +217,7 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     function mint(
         address collateralToken,
         uint256 collateralAmount
-    ) external nonReentrant {
+    ) external nonReentrant whenNotPaused {
         require(acceptedCollateral[collateralToken], "Token not accepted as collateral");
         require(collateralAmount > 0, "Amount must be > 0");
 
@@ -234,7 +249,7 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
      * @param to Recipient of minted tokens
      * @param amount Amount of $DCHAT to mint (18 decimals)
      */
-    function adminMint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
+    function adminMint(address to, uint256 amount) external onlyRole(MINTER_ROLE) whenNotPaused {
         require(to != address(0), "Invalid recipient");
         require(amount > 0, "Amount must be > 0");
         require(totalAdminMinted + amount <= MAX_ADMIN_MINT, "Admin mint cap exceeded"); // [F-09]
@@ -297,18 +312,52 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
      *      70% to nodes, 20% to dividend pool, 10% to reserve.
      *      Settlement is INDIVIDUAL and REAL-TIME for maximum transparency.
      */
+    /**
+     * @notice [F-10] Usuário aprova limite diário que o relayer pode gastar.
+     * @dev Chamada pelo próprio usuário (não pelo relayer).
+     *      O relayer só pode processar mensagens até este limite por dia.
+     * @param dailyLimit Limite diário em $DCHAT (18 decimals). 0 = revogar.
+     */
+    function approveRelayerAllowance(uint256 dailyLimit) external {
+        relayerDailyLimit[msg.sender] = dailyLimit;
+        emit RelayerAllowanceSet(msg.sender, dailyLimit);
+    }
+
+    /**
+     * @notice Get remaining relayer allowance for a user today.
+     */
+    function getRelayerRemainingAllowance(address user) external view returns (uint256) {
+        uint256 today = block.timestamp / 1 days;
+        uint256 spent = relayerLastResetDay[user] == today ? relayerDailySpent[user] : 0;
+        uint256 limit = relayerDailyLimit[user];
+        return spent < limit ? limit - spent : 0;
+    }
+
     function processMessage(
         address sender,
         address recipient,
         uint256 byteSize,
         uint8 dataType
-    ) external onlyRole(RELAYER_ROLE) nonReentrant {
+    ) external onlyRole(RELAYER_ROLE) nonReentrant whenNotPaused {
         require(sender != address(0), "Invalid sender");
         require(byteSize > 0, "Empty message");
         require(dataType <= 4, "Invalid data type");
 
         uint256 totalFee = calculateFee(byteSize, dataType);
         require(balanceOf(sender) >= totalFee, "Insufficient DCHAT balance");
+
+        // [F-10] Check relayer allowance
+        uint256 today = block.timestamp / 1 days;
+        if (relayerLastResetDay[sender] != today) {
+            relayerDailySpent[sender] = 0;
+            relayerLastResetDay[sender] = today;
+        }
+        require(relayerDailyLimit[sender] > 0, "User has not approved relayer");
+        require(
+            relayerDailySpent[sender] + totalFee <= relayerDailyLimit[sender],
+            "Relayer daily limit exceeded"
+        );
+        relayerDailySpent[sender] += totalFee;
 
         // Calculate distribution
         uint256 nodeFee = (totalFee * NODE_FEE_BPS) / 10000;
@@ -318,10 +367,12 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
         // Transfer fees (CIRCULATION, not burn)
         _transfer(sender, address(this), totalFee);
 
-        // Distribute to nodes (proportional to stake)
-        if (activeNodeList.length > 0 && totalNodeStake > 0) {
-            _distributeToNodes(nodeFee);
+        // [F-11] Distribute to nodes via points-per-token (O(1), no loop)
+        if (totalNodeStake > 0) {
+            nodeRewardPerToken += (nodeFee * NODE_PRECISION) / totalNodeStake;
+            nodeTotalDistributed += nodeFee;
         } else {
+            // No nodes active — send to reserve
             _transfer(address(this), reserveWallet, nodeFee);
         }
 
@@ -341,6 +392,11 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
             totalFee, nodeFee, dividendFee, reserveFee,
             block.timestamp
         );
+
+        emit RelayerAllowanceSpent(
+            sender, totalFee,
+            relayerDailyLimit[sender] - relayerDailySpent[sender]
+        );
     }
 
     /**
@@ -359,12 +415,13 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
         require(nodeAddress != address(0), "Invalid node address");
         require(!nodes[nodeAddress].active, "Node already active");
         require(activeNodeList.length < 500, "Max nodes reached");
+        require(stake > 0, "Stake must be > 0");
 
         nodes[nodeAddress] = Node({
             wallet: nodeAddress,
             stake: stake,
             totalEarned: 0,
-            pendingRewards: 0,
+            rewardDebt: nodeRewardPerToken,  // [F-11] Snapshot
             active: true,
             registeredAt: block.timestamp
         });
@@ -378,6 +435,14 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     function removeNode(address nodeAddress) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(nodes[nodeAddress].active, "Node not active");
 
+        // [F-11] Claim pending before removal
+        uint256 pending = _getNodePendingRewards(nodeAddress);
+        if (pending > 0) {
+            nodes[nodeAddress].totalEarned += pending;
+            _transfer(address(this), nodeAddress, pending);
+            emit NodeRewardDistributed(nodeAddress, pending);
+        }
+
         nodes[nodeAddress].active = false;
         totalNodeStake -= nodes[nodeAddress].stake;
 
@@ -389,34 +454,51 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
             }
         }
 
-        uint256 pending = nodes[nodeAddress].pendingRewards;
-        if (pending > 0) {
-            nodes[nodeAddress].pendingRewards = 0;
-            _transfer(address(this), nodeAddress, pending);
-        }
-
         emit NodeRemoved(nodeAddress, pending);
     }
 
+    /**
+     * @notice [F-11] Claim accumulated node rewards (points-per-token).
+     */
     function claimNodeRewards() external nonReentrant {
-        uint256 pending = nodes[msg.sender].pendingRewards;
+        require(nodes[msg.sender].active, "Not an active node");
+        uint256 pending = _getNodePendingRewards(msg.sender);
         require(pending > 0, "No pending rewards");
 
-        nodes[msg.sender].pendingRewards = 0;
+        nodes[msg.sender].rewardDebt = nodeRewardPerToken;
         nodes[msg.sender].totalEarned += pending;
         _transfer(address(this), msg.sender, pending);
 
         emit NodeRewardDistributed(msg.sender, pending);
     }
 
+    /**
+     * @notice [F-11] Get pending rewards for a node (view).
+     */
+    function getNodePendingRewards(address nodeAddress) external view returns (uint256) {
+        return _getNodePendingRewards(nodeAddress);
+    }
+
     // =========================================================================
     // ACTIVATION FEE
     // =========================================================================
 
-    function payActivationFee(address user) external onlyRole(RELAYER_ROLE) {
+    function payActivationFee(address user) external onlyRole(RELAYER_ROLE) whenNotPaused {
         require(balanceOf(user) >= activationFee, "Insufficient balance for activation");
         _transfer(user, reserveWallet, activationFee);
         emit ActivationFeePaid(user, activationFee);
+    }
+
+    // =========================================================================
+    // [F-14] CIRCUIT BREAKER — PAUSE/UNPAUSE
+    // =========================================================================
+
+    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
     }
 
     // =========================================================================
@@ -496,7 +578,8 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
         uint256 registeredAt
     ) {
         Node storage n = nodes[nodeAddress];
-        return (n.stake, n.totalEarned, n.pendingRewards, n.active, n.registeredAt);
+        uint256 pending = _getNodePendingRewards(nodeAddress);
+        return (n.stake, n.totalEarned, pending, n.active, n.registeredAt);
     }
 
     function getProtocolStats() external view returns (
@@ -533,35 +616,31 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     }
 
     /**
-     * @notice Check the collateralization ratio (should always be >= 100%).
+     * @notice [F-13] Check the collateralization ratio.
+     * @dev Desconta totalAdminMinted do supply para refletir ratio real.
+     *      Tokens mintados via adminMint não têm colateral correspondente.
      * @return ratio The ratio in basis points (10000 = 100%)
      */
     function getCollateralizationRatio() external view returns (uint256) {
-        if (totalSupply() == 0) return 10000;
-        // totalVaultBalance is in 6 decimals (USDC/USDT)
-        // totalSupply is in 18 decimals
-        // Normalize: vault * 1e12 to get 18 decimals, then ratio
+        uint256 collateralizedSupply = totalSupply() > totalAdminMinted
+            ? totalSupply() - totalAdminMinted
+            : 0;
+        if (collateralizedSupply == 0) return 10000;
         uint256 vaultIn18 = totalVaultBalance * 1e12;
-        return (vaultIn18 * 10000) / totalSupply();
+        return (vaultIn18 * 10000) / collateralizedSupply;
     }
 
     // =========================================================================
     // INTERNAL FUNCTIONS
     // =========================================================================
 
-    function _distributeToNodes(uint256 amount) internal {
-        uint256 distributed = 0;
-        for (uint256 i = 0; i < activeNodeList.length; i++) {
-            address nodeAddr = activeNodeList[i];
-            if (nodes[nodeAddr].active && nodes[nodeAddr].stake > 0) {
-                uint256 share = (amount * nodes[nodeAddr].stake) / totalNodeStake;
-                nodes[nodeAddr].pendingRewards += share;
-                distributed += share;
-            }
-        }
-        if (distributed < amount && activeNodeList.length > 0) {
-            nodes[activeNodeList[0]].pendingRewards += (amount - distributed);
-        }
+    /**
+     * @notice [F-11] Calculate pending rewards for a node using points-per-token.
+     */
+    function _getNodePendingRewards(address nodeAddress) internal view returns (uint256) {
+        Node storage n = nodes[nodeAddress];
+        if (!n.active || n.stake == 0) return 0;
+        return (n.stake * (nodeRewardPerToken - n.rewardDebt)) / NODE_PRECISION;
     }
 
     function _getMultiplier(uint8 dataType) internal view returns (uint16) {

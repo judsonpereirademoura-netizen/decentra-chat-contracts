@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
 
 /**
  * @title DGovToken ($DGOV) v3.0
@@ -30,7 +31,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  *
  *   GOVERNANÇA: 100% on-chain, 1 $DGOV = 1 voto
  */
-contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
+contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
 
     // =========================================================================
     // CONSTANTS
@@ -95,6 +96,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         uint256 claimed;       // Tokens já liberados/claimed do vesting
     }
     mapping(address => MarketingLock[]) public marketingLocks;
+    mapping(address => uint256) public marketingLockedCache; // [F-04] Cache de locked por endereço
     uint256 public totalMarketingDistributed;  // Total já distribuído pelo fundador
     uint256 public totalMarketingLocked;       // Total atualmente locked em prestadores
 
@@ -241,7 +243,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     // FOUNDER VESTING (30M: 10M every 12 months)
     // =========================================================================
 
-    function claimFounderVesting() external nonReentrant {
+    function claimFounderVesting() external nonReentrant whenNotPaused {
         require(msg.sender == founder, "Only founder");
         require(founderTranchesClaimed < VESTING_TRANCHES, "All tranches claimed");
 
@@ -265,7 +267,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
      * @param recipient Endereço do prestador de serviço
      * @param amount Quantidade de $DGOV a transferir
      */
-    function transferMarketingTokens(address recipient, uint256 amount) external nonReentrant {
+    function transferMarketingTokens(address recipient, uint256 amount) external nonReentrant whenNotPaused {
         require(msg.sender == founder, "Only founder");
         require(recipient != address(0), "Invalid recipient");
         require(amount > 0, "Amount must be > 0");
@@ -291,6 +293,9 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
             claimed: 0
         }));
 
+        // [F-04] Atualizar cache
+        marketingLockedCache[recipient] += amount;
+
         emit MarketingTokensTransferred(recipient, amount, lockEnd, lockIndex);
     }
 
@@ -312,6 +317,13 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         lock.claimed += claimable;
         totalMarketingLocked -= claimable;
 
+        // [F-04] Atualizar cache
+        if (marketingLockedCache[msg.sender] >= claimable) {
+            marketingLockedCache[msg.sender] -= claimable;
+        } else {
+            marketingLockedCache[msg.sender] = 0;
+        }
+
         emit MarketingTokensUnlocked(msg.sender, lockIndex, claimable);
     }
 
@@ -332,8 +344,13 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
      */
     function _update(address from, address to, uint256 value) internal virtual override {
         if (from != address(0) && from != address(this)) {
-            // Verificar se o remetente tem tokens de marketing locked
-            uint256 lockedAmount = getMarketingLockedBalance(from);
+            // [F-04] Usa cache para evitar iteração O(n) em cada transfer
+            uint256 lockedAmount = marketingLockedCache[from];
+            if (lockedAmount > 0) {
+                // Recalcular cache se necessário (vesting pode ter liberado tokens)
+                lockedAmount = getMarketingLockedBalance(from);
+                marketingLockedCache[from] = lockedAmount;
+            }
             uint256 balance = balanceOf(from);
             require(balance - lockedAmount >= value, "Cannot transfer locked marketing tokens");
         }
@@ -432,7 +449,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     // ESCROW POOL
     // =========================================================================
 
-    function depositToEscrow(uint256 amount) external nonReentrant {
+    function depositToEscrow(uint256 amount) external nonReentrant whenNotPaused {
         require(registeredUsers[msg.sender], "Not a registered user");
         require(amount > 0, "Amount must be > 0");
         require(
@@ -504,7 +521,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         return phaseTokens / AUCTIONS_PER_PHASE;
     }
 
-    function startNextAuction() external {
+    function startNextAuction() external whenNotPaused {
         require(auctionsStartTime > 0, "Auctions not initialized");
         require(currentAuctionId < TOTAL_AUCTIONS, "All auctions completed");
 
@@ -544,7 +561,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
      * @param quantity Quantidade de $DGOV desejada
      * @param pricePerUnit Preço por unidade em $DCHAT (18 decimals)
      */
-    function placeBid(uint256 quantity, uint256 pricePerUnit) external nonReentrant {
+    function placeBid(uint256 quantity, uint256 pricePerUnit) external nonReentrant whenNotPaused {
         require(registeredUsers[msg.sender], "Not a registered user");
 
         uint256 auctionId = currentAuctionId;
@@ -621,7 +638,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
      *         preenche até esgotar o lote, devolve excedentes, queima sobras,
      *         envia 100% da receita ao DividendPool.
      */
-    function finalizeAuction(uint256 auctionId) external nonReentrant {
+    function finalizeAuction(uint256 auctionId) external nonReentrant whenNotPaused {
         Auction storage auction = auctions[auctionId];
 
         require(auction.id > 0, "Auction does not exist");
@@ -812,6 +829,18 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         if (idx == 3) return (4, "Maturidade");
         if (idx == 4) return (5, "Consolidacao");
         return (6, "Final");
+    }
+
+    // =========================================================================
+    // [F-14] CIRCUIT BREAKER — PAUSE/UNPAUSE
+    // =========================================================================
+
+    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
     }
 
     // =========================================================================

@@ -952,8 +952,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DChatStablecoin.sol": {
-      "lastModificationDate": 1773839691681,
-      "contentHash": "e4002aebf21e2fdce1eac8c884130506",
+      "lastModificationDate": 1773843370758,
+      "contentHash": "f7edc896aa28522bb0abae4af3e04328",
       "sourceName": "contracts/DChatStablecoin.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -984,7 +984,8 @@
         "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol",
         "@openzeppelin/contracts/token/ERC20/IERC20.sol",
         "@openzeppelin/contracts/access/AccessControl.sol",
-        "@openzeppelin/contracts/utils/ReentrancyGuard.sol"
+        "@openzeppelin/contracts/utils/ReentrancyGuard.sol",
+        "@openzeppelin/contracts/utils/Pausable.sol"
       ],
       "versionPragmas": [
         "^0.8.24"
@@ -1144,8 +1145,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DividendPool.sol": {
-      "lastModificationDate": 1773839729917,
-      "contentHash": "75ba5d25fdf03d873d75c2132a44c39e",
+      "lastModificationDate": 1773843525707,
+      "contentHash": "8b5953a0984863f9b9504f71fc7c6e9a",
       "sourceName": "contracts/DividendPool.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -1174,7 +1175,8 @@
       "imports": [
         "@openzeppelin/contracts/access/AccessControl.sol",
         "@openzeppelin/contracts/utils/ReentrancyGuard.sol",
-        "@openzeppelin/contracts/token/ERC20/IERC20.sol"
+        "@openzeppelin/contracts/token/ERC20/IERC20.sol",
+        "@openzeppelin/contracts/utils/Pausable.sol"
       ],
       "versionPragmas": [
         "^0.8.24"
@@ -1185,8 +1187,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DGovToken.sol": {
-      "lastModificationDate": 1773839671048,
-      "contentHash": "2a7969845d1790c4a8329209b5ebad9e",
+      "lastModificationDate": 1773843317226,
+      "contentHash": "0de74f93b82927b5e0e4900106ddd244",
       "sourceName": "contracts/DGovToken.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -1216,7 +1218,8 @@
         "@openzeppelin/contracts/token/ERC20/ERC20.sol",
         "@openzeppelin/contracts/token/ERC20/IERC20.sol",
         "@openzeppelin/contracts/access/AccessControl.sol",
-        "@openzeppelin/contracts/utils/ReentrancyGuard.sol"
+        "@openzeppelin/contracts/utils/ReentrancyGuard.sol",
+        "@openzeppelin/contracts/utils/Pausable.sol"
       ],
       "versionPragmas": [
         "^0.8.24"
@@ -1264,8 +1267,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DGovGovernance.sol": {
-      "lastModificationDate": 1773839776141,
-      "contentHash": "b318f3d5079e8f408c233c5c2bf1f2fb",
+      "lastModificationDate": 1773843457931,
+      "contentHash": "d94a039c32a157df36cc54ed3ab5e6b1",
       "sourceName": "contracts/DGovGovernance.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -1292,7 +1295,8 @@
         }
       },
       "imports": [
-        "@openzeppelin/contracts/utils/ReentrancyGuard.sol"
+        "@openzeppelin/contracts/utils/ReentrancyGuard.sol",
+        "@openzeppelin/contracts/utils/Pausable.sol"
       ],
       "versionPragmas": [
         "^0.8.24"
@@ -1300,6 +1304,46 @@
       "artifacts": [
         "DGovGovernance",
         "IDGovToken"
+      ]
+    },
+    "/home/ubuntu/decentra-chat-contracts/contracts/ReserveWallet.sol": {
+      "lastModificationDate": 1773843095325,
+      "contentHash": "15c0815e061bd6e739cfcf340022e0ea",
+      "sourceName": "contracts/ReserveWallet.sol",
+      "solcConfig": {
+        "version": "0.8.24",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "@openzeppelin/contracts/token/ERC20/IERC20.sol",
+        "@openzeppelin/contracts/access/AccessControl.sol",
+        "@openzeppelin/contracts/utils/ReentrancyGuard.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.24"
+      ],
+      "artifacts": [
+        "ReserveWallet"
       ]
     }
   }
