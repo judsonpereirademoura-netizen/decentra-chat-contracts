@@ -52,6 +52,9 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     uint256 public constant MIN_INCREMENT_BPS = 500;  // 5% incremento mínimo (basis points)
     uint256 public constant BPS_DENOMINATOR = 10000;
 
+    uint256 public constant MAX_BIDS_PER_AUCTION = 500;  // [F-01/F-02] Limite para evitar DoS por gas
+    uint256 public constant MAX_ANTI_SNIPE_EXTENSIONS = 6; // [F-03] Máximo 1h extra de extensão
+
     uint256 public constant VESTING_TRANCHES = 3;
     uint256 public constant VESTING_INTERVAL = 365 days;
     uint256 public constant FOUNDER_PER_TRANCHE = 10_000_000 * 1e18;
@@ -138,6 +141,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         uint256 totalRevenue;        // Total $DCHAT arrecadado neste leilão
         uint256 tokensSold;          // Total $DGOV vendidos
         uint256 tokensBurnedAmount;  // Total $DGOV queimados
+        uint256 antiSnipeCount;      // [F-03] Contador de extensões anti-sniping
     }
 
     mapping(uint256 => Auction) public auctions;
@@ -216,6 +220,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     }
 
     function registerUserBatch(address[] calldata users) external onlyRole(AUCTION_MANAGER_ROLE) {
+        require(users.length <= 200, "Batch too large"); // [F-06]
         for (uint256 i = 0; i < users.length; i++) {
             if (users[i] != address(0) && !registeredUsers[users[i]]) {
                 registeredUsers[users[i]] = true;
@@ -294,7 +299,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
      *         Após 180 dias de lock, inicia liberação linear por mais 180 dias.
      * @param lockIndex Índice do lock a fazer claim
      */
-    function claimMarketingVesting(uint256 lockIndex) external nonReentrant {
+    function unlockMarketingVesting(uint256 lockIndex) external nonReentrant { // [F-05] Renamed for clarity
         require(lockIndex < marketingLocks[msg.sender].length, "Invalid lock index");
 
         MarketingLock storage lock = marketingLocks[msg.sender][lockIndex];
@@ -525,7 +530,8 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
             tokensBurned: false,
             totalRevenue: 0,
             tokensSold: 0,
-            tokensBurnedAmount: 0
+            tokensBurnedAmount: 0,
+            antiSnipeCount: 0
         });
 
         currentAuctionId = nextId;
@@ -548,6 +554,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         require(block.timestamp >= auction.startTime, "Auction not started");
         require(block.timestamp < auction.endTime, "Auction ended");
         require(!auction.finalized, "Auction finalized");
+        require(auctionBids[auctionId].length < MAX_BIDS_PER_AUCTION, "Max bids reached for this auction"); // [F-01/F-02]
         require(quantity > 0, "Quantity must be > 0");
         require(pricePerUnit > 0, "Price must be > 0");
 
@@ -598,9 +605,11 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         auction.totalBidCount++;
         auction.totalBidVolume += quantity;
 
-        // Anti-sniping: extend auction if bid in last 10 minutes
-        if (auction.endTime - block.timestamp <= ANTI_SNIPE_WINDOW) {
+        // Anti-sniping: extend auction if bid in last 10 minutes [F-03: limited extensions]
+        if (auction.endTime - block.timestamp <= ANTI_SNIPE_WINDOW
+            && auction.antiSnipeCount < MAX_ANTI_SNIPE_EXTENSIONS) {
             auction.endTime += ANTI_SNIPE_EXTENSION;
+            auction.antiSnipeCount++;
             emit AuctionExtended(auctionId, auction.endTime);
         }
 

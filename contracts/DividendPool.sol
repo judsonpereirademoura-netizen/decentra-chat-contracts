@@ -6,6 +6,14 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
+ * @dev Interface para consultar o endereço do contrato DGovToken [F-15]
+ */
+interface IDGovTokenForDividend {
+    function balanceOf(address account) external view returns (uint256);
+    function totalSupply() external view returns (uint256);
+}
+
+/**
  * @title DividendPool v2.0
  * @author DecentraChat Protocol
  * @notice Pool de dividendos que distribui receita da plataforma para holders de $DGOV.
@@ -29,10 +37,16 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 contract DividendPool is AccessControl, ReentrancyGuard {
 
     // =========================================================================
+    // ROLES [F-16]
+    // =========================================================================
+    bytes32 public constant DEPOSITOR_ROLE = keccak256("DEPOSITOR_ROLE");
+
+    // =========================================================================
     // INTERFACES
     // =========================================================================
     IERC20 public dchatToken;   // $DCHAT stablecoin
-    IERC20 public dgovToken;    // $DGOV governance token
+    IDGovTokenForDividend public dgovToken; // $DGOV governance token
+    address public dgovTokenAddress; // [F-15] Endereço do contrato DGovToken para descontar tokens inativos
 
     // =========================================================================
     // DIVIDEND TRACKING (Points-per-token system)
@@ -89,9 +103,11 @@ contract DividendPool is AccessControl, ReentrancyGuard {
         require(_admin != address(0), "Invalid admin");
 
         dchatToken = IERC20(_dchatToken);
-        dgovToken = IERC20(_dgovToken);
+        dgovToken = IDGovTokenForDividend(_dgovToken);
+        dgovTokenAddress = _dgovToken; // [F-15]
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
+        _grantRole(DEPOSITOR_ROLE, _admin); // [F-16] Admin can deposit initially
     }
 
     // =========================================================================
@@ -141,7 +157,7 @@ contract DividendPool is AccessControl, ReentrancyGuard {
     /**
      * @notice Deposit $DCHAT dividends from messaging fees (20% of each message).
      */
-    function depositDividends(uint256 amount) external {
+    function depositDividends(uint256 amount) external onlyRole(DEPOSITOR_ROLE) { // [F-16]
         _depositInternal(amount, "messaging");
         totalFromMessaging += amount;
     }
@@ -149,7 +165,7 @@ contract DividendPool is AccessControl, ReentrancyGuard {
     /**
      * @notice Deposit $DCHAT dividends from auction revenue (100% of auction proceeds).
      */
-    function depositAuctionRevenue(uint256 amount) external {
+    function depositAuctionRevenue(uint256 amount) external onlyRole(DEPOSITOR_ROLE) { // [F-16]
         _depositInternal(amount, "auction");
         totalFromAuctions += amount;
     }
@@ -214,35 +230,14 @@ contract DividendPool is AccessControl, ReentrancyGuard {
      * @notice Get the total dividend weight across all holders.
      */
     function _getTotalDividendWeight() internal view returns (uint256) {
-        // totalSupply includes all minted tokens (even those in the DGovToken contract)
-        // We need: circulating supply + vesting weight
-        // But since vesting tokens are IN the DGovToken contract (not burned),
-        // they're part of totalSupply. We use totalSupply - burned + vestingWeight
-        // Actually: totalSupply already excludes burned tokens.
-        // Vesting tokens are held by DGovToken contract address.
-        // So: totalWeight = totalSupply (includes contract-held) + totalVestingWeight
-        // Wait — that would double-count. Let me think...
-        //
-        // The DGovToken contract holds: auction tokens + unvested founder/marketing tokens
-        // Auction tokens should NOT count for dividends.
-        // Unvested founder/marketing tokens should count (via vestingWeight).
-        //
-        // So: totalWeight = (totalSupply - balanceOf(DGovToken_contract)) + totalVestingWeight
-        // This gives us: circulating tokens + vesting weight
-        //
-        // But we don't know the DGovToken contract address here easily.
-        // Solution: just use totalSupply() + totalVestingWeight, and the DGovToken
-        // contract itself won't claim dividends (it has no mechanism to do so).
-        // The excess points allocated to the contract's balance are effectively lost/unclaimed.
-        //
-        // Better approach: use totalSupply + totalVestingWeight as the denominator.
-        // Holders get: (their weight / totalWeight) * dividends
-        // DGovToken contract's tokens are "dead weight" that dilute slightly,
-        // but since those tokens can never claim, the unclaimed dividends stay in the pool.
-        //
-        // For simplicity and correctness, we use this approach.
-
-        return dgovToken.totalSupply() + totalVestingWeight;
+        // [F-15] CORRIGIDO: Descontar tokens inativos no contrato DGovToken
+        // O contrato DGovToken segura: auction tokens + unvested founder/marketing tokens
+        // Auction tokens NÃO devem contar para dividendos (nunca podem claim)
+        // Unvested tokens contam via vestingWeight separadamente
+        // Fórmula: (totalSupply - balanceOf(DGovToken_contract)) + totalVestingWeight
+        // Isso dá: tokens em circulação real + peso de vesting
+        uint256 circulatingSupply = dgovToken.totalSupply() - dgovToken.balanceOf(dgovTokenAddress);
+        return circulatingSupply + totalVestingWeight;
     }
 
     function getTotalDividendWeight() external view returns (uint256) {

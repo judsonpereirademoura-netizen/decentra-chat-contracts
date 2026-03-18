@@ -53,6 +53,8 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     // REDEEM MINIMUM
     // =========================================================================
     uint256 public constant MIN_REDEEM = 5 * 1e18; // 5 $DCHAT ($5 USD) mínimo para resgate
+    uint256 public constant MAX_ADMIN_MINT = 100_000 * 1e18; // [F-09] Cap de $100k para mint sem colateral
+    uint256 public totalAdminMinted; // [F-09] Tracking de mint sem colateral
 
     // =========================================================================
     // FEE DISTRIBUTION (basis points, total = 10000)
@@ -235,6 +237,8 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     function adminMint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
         require(to != address(0), "Invalid recipient");
         require(amount > 0, "Amount must be > 0");
+        require(totalAdminMinted + amount <= MAX_ADMIN_MINT, "Admin mint cap exceeded"); // [F-09]
+        totalAdminMinted += amount; // [F-09]
         _mint(to, amount);
         emit Minted(to, address(0), 0, amount, block.timestamp);
     }

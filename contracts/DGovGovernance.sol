@@ -34,6 +34,8 @@ contract DGovGovernance is ReentrancyGuard {
     uint256 public constant BPS_DENOMINATOR = 10000;
     uint256 public constant PROPOSAL_THRESHOLD_BPS = 100;
     uint256 public constant VOTER_INACTIVITY_PERIOD = 90 days;
+    uint256 public constant MAX_DELEGATORS_PER_DELEGATE = 50; // [F-21]
+    uint256 public constant EXECUTION_DEADLINE = 7 days; // [F-23] Prazo máximo para executar após timelock
 
     // =========================================================================
     // STATE — Core
@@ -41,6 +43,11 @@ contract DGovGovernance is ReentrancyGuard {
 
     IDGovToken public immutable dgov;
     address public admin;
+    address public pendingAdmin; // [F-22] Admin transfer com aceitação
+    uint256 public adminTransferTimestamp; // [F-22] Timestamp do pedido de transferência
+
+    // [F-19] Whitelist de targets permitidos para execução de propostas
+    mapping(address => bool) public allowedTargets;
 
     // =========================================================================
     // STATE — Proposals (split into small structs to avoid stack-too-deep)
@@ -112,6 +119,10 @@ contract DGovGovernance is ReentrancyGuard {
     event VoterReactivated(address indexed voter);
     event DelegateSet(address indexed voter, address indexed delegate);
     event DelegateRemoved(address indexed voter, address indexed previousDelegate);
+    event AdminTransferInitiated(address indexed currentAdmin, address indexed pendingAdmin);
+    event AdminTransferCompleted(address indexed previousAdmin, address indexed newAdmin);
+    event TargetAllowed(address indexed target, bool allowed);
+    event ProposalCancelled(uint256 indexed proposalId, address indexed cancelledBy);
 
     // =========================================================================
     // CONSTRUCTOR
@@ -121,6 +132,42 @@ contract DGovGovernance is ReentrancyGuard {
         require(_dgov != address(0) && _admin != address(0), "Invalid address");
         dgov = IDGovToken(_dgov);
         admin = _admin;
+    }
+
+    // =========================================================================
+    // ADMIN MANAGEMENT [F-22]
+    // =========================================================================
+
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only admin");
+        _;
+    }
+
+    function initiateAdminTransfer(address _newAdmin) external onlyAdmin {
+        require(_newAdmin != address(0) && _newAdmin != admin, "Invalid new admin");
+        pendingAdmin = _newAdmin;
+        adminTransferTimestamp = block.timestamp;
+        emit AdminTransferInitiated(admin, _newAdmin);
+    }
+
+    function acceptAdminTransfer() external {
+        require(msg.sender == pendingAdmin, "Not pending admin");
+        require(block.timestamp >= adminTransferTimestamp + TIMELOCK_DELAY, "Timelock active");
+        address prev = admin;
+        admin = pendingAdmin;
+        pendingAdmin = address(0);
+        adminTransferTimestamp = 0;
+        emit AdminTransferCompleted(prev, admin);
+    }
+
+    // =========================================================================
+    // TARGET WHITELIST [F-19]
+    // =========================================================================
+
+    function setAllowedTarget(address target, bool allowed) external onlyAdmin {
+        require(target != address(0), "Invalid target");
+        allowedTargets[target] = allowed;
+        emit TargetAllowed(target, allowed);
     }
 
     // =========================================================================
@@ -148,6 +195,7 @@ contract DGovGovernance is ReentrancyGuard {
             _removeDelegator(v.delegate, msg.sender);
         }
         v.delegate = _delegate;
+        require(delegators[_delegate].length < MAX_DELEGATORS_PER_DELEGATE, "Max delegators reached"); // [F-21]
         delegators[_delegate].push(msg.sender);
         emit DelegateSet(msg.sender, _delegate);
     }
@@ -312,14 +360,29 @@ contract DGovGovernance is ReentrancyGuard {
         ProposalCore storage c = proposalCores[pid];
         require(!c.executed && c.timelockEnd > 0, "Cannot execute");
         require(block.timestamp >= c.timelockEnd, "Timelock active");
+        require(block.timestamp <= c.timelockEnd + EXECUTION_DEADLINE, "Execution deadline expired"); // [F-23]
 
         c.executed = true;
         ProposalExecution storage ex = proposalExecutions[pid];
         if (ex.data.length > 0 && ex.target != address(0)) {
+            require(allowedTargets[ex.target], "Target not in whitelist"); // [F-19]
             (bool ok, ) = ex.target.call(ex.data);
             require(ok, "Execution failed");
         }
         emit ProposalExecuted(pid);
+    }
+
+    // [F-24] Cancel proposal — by proposer (before voting ends) or by admin (emergency)
+    function cancelProposal(uint256 pid) external {
+        ProposalCore storage c = proposalCores[pid];
+        require(c.proposer != address(0) && !c.executed, "Cannot cancel");
+        require(
+            msg.sender == c.proposer && block.timestamp < c.endTime ||
+            msg.sender == admin,
+            "Not authorized to cancel"
+        );
+        c.executed = true; // Mark as executed to prevent further actions
+        emit ProposalCancelled(pid, msg.sender);
     }
 
     // =========================================================================

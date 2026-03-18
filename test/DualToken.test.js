@@ -345,7 +345,7 @@ describe("DecentraChat Dual-Token System v3.0", function () {
         // Try claim at 90 days — still in lock period
         await time.increase(90 * ONE_DAY);
         await expect(
-          dgov.connect(user1).claimMarketingVesting(0)
+          dgov.connect(user1).unlockMarketingVesting(0)
         ).to.be.revertedWith("Lock period not expired");
       });
 
@@ -363,7 +363,7 @@ describe("DecentraChat Dual-Token System v3.0", function () {
         expect(claimable).to.be.closeTo(expected, ethers.parseEther("20000"));
 
         // Claim
-        await dgov.connect(user1).claimMarketingVesting(0);
+        await dgov.connect(user1).unlockMarketingVesting(0);
 
         // Locked balance should be ~50%
         const locked = await dgov.getMarketingLockedBalance(user1.address);
@@ -384,7 +384,7 @@ describe("DecentraChat Dual-Token System v3.0", function () {
         expect(await dgov.getMarketingClaimable(user1.address)).to.equal(amount);
 
         // Claim all
-        await dgov.connect(user1).claimMarketingVesting(0);
+        await dgov.connect(user1).unlockMarketingVesting(0);
         expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(0);
 
         // Can transfer everything
@@ -398,16 +398,16 @@ describe("DecentraChat Dual-Token System v3.0", function () {
 
         // Claim at 25% vesting (180 + 45 days)
         await time.increase(ONE_HUNDRED_EIGHTY_DAYS + 45 * ONE_DAY);
-        await dgov.connect(user1).claimMarketingVesting(0);
+        await dgov.connect(user1).unlockMarketingVesting(0);
         const claimed1 = amount / 4n; // ~25%
 
         // Claim at 75% vesting (180 + 135 days total)
         await time.increase(90 * ONE_DAY);
-        await dgov.connect(user1).claimMarketingVesting(0);
+        await dgov.connect(user1).unlockMarketingVesting(0);
 
         // Claim rest at 100%
         await time.increase(45 * ONE_DAY);
-        await dgov.connect(user1).claimMarketingVesting(0);
+        await dgov.connect(user1).unlockMarketingVesting(0);
 
         expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(0);
         expect(await dgov.getMarketingClaimable(user1.address)).to.equal(0);
@@ -426,7 +426,7 @@ describe("DecentraChat Dual-Token System v3.0", function () {
 
         // Advance to 360 days from first lock (fully vested for lock 1)
         await time.increase(330 * ONE_DAY);
-        await dgov.connect(user1).claimMarketingVesting(0); // Lock 1 fully vested
+        await dgov.connect(user1).unlockMarketingVesting(0); // Lock 1 fully vested
         
         // Lock 2 was created 30 days later, so it has 30 days of vesting left
         // Lock 2 vesting: 330 - 180 (lock period) = 150 days of 180 = ~83% vested
@@ -437,7 +437,7 @@ describe("DecentraChat Dual-Token System v3.0", function () {
 
         // Advance 30 more days to fully vest second lock
         await time.increase(30 * ONE_DAY);
-        await dgov.connect(user1).claimMarketingVesting(1);
+        await dgov.connect(user1).unlockMarketingVesting(1);
         expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(0);
       });
 
@@ -482,7 +482,7 @@ describe("DecentraChat Dual-Token System v3.0", function () {
 
         // After full vesting (360 days)
         await time.increase(THREE_SIXTY_DAYS);
-        await dgov.connect(user1).claimMarketingVesting(0);
+        await dgov.connect(user1).unlockMarketingVesting(0);
 
         expect(await dgov.totalMarketingLocked()).to.equal(0);
       });
@@ -492,15 +492,15 @@ describe("DecentraChat Dual-Token System v3.0", function () {
 
         // During lock period
         await expect(
-          dgov.connect(user1).claimMarketingVesting(0)
+          dgov.connect(user1).unlockMarketingVesting(0)
         ).to.be.revertedWith("Lock period not expired");
 
         // After full vesting and claim
         await time.increase(THREE_SIXTY_DAYS);
-        await dgov.connect(user1).claimMarketingVesting(0);
+        await dgov.connect(user1).unlockMarketingVesting(0);
 
         await expect(
-          dgov.connect(user1).claimMarketingVesting(0)
+          dgov.connect(user1).unlockMarketingVesting(0)
         ).to.be.revertedWith("Nothing to claim");
       });
     });
@@ -1221,6 +1221,12 @@ describe("DecentraChat Dual-Token System v3.0", function () {
     });
 
     describe("Dividend Deposits", function () {
+      beforeEach(async function () {
+        // [F-16] Grant DEPOSITOR_ROLE to user1 for testing
+        const DEPOSITOR_ROLE = await dividendPool.DEPOSITOR_ROLE();
+        await dividendPool.connect(founder).grantRole(DEPOSITOR_ROLE, user1.address);
+      });
+
       it("Should accept messaging dividends", async function () {
         const amount = ethers.parseEther("1000");
         await dchat.connect(user1).approve(await dividendPool.getAddress(), amount);
@@ -1255,6 +1261,10 @@ describe("DecentraChat Dual-Token System v3.0", function () {
 
     describe("Dividend Claims", function () {
       it("Should allow holder with vesting weight to claim dividends", async function () {
+        // [F-16] Grant DEPOSITOR_ROLE to user1
+        const DEPOSITOR_ROLE = await dividendPool.DEPOSITOR_ROLE();
+        await dividendPool.connect(founder).grantRole(DEPOSITOR_ROLE, user1.address);
+
         // Set founder vesting weight
         await dividendPool.connect(founder).setVestingWeight(founder.address, FOUNDER_ALLOC);
 
