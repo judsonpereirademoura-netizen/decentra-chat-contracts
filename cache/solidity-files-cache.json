@@ -1184,8 +1184,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DGovToken.sol": {
-      "lastModificationDate": 1773825399151,
-      "contentHash": "eaac61b9d28d5c635fdd5b3bea20c22d",
+      "lastModificationDate": 1773838389009,
+      "contentHash": "f1f9e5a47a7a453aee23200003fd1d3b",
       "sourceName": "contracts/DGovToken.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -1260,6 +1260,45 @@
       ],
       "artifacts": [
         "MockERC20"
+      ]
+    },
+    "/home/ubuntu/decentra-chat-contracts/contracts/DGovGovernance.sol": {
+      "lastModificationDate": 1773838324357,
+      "contentHash": "5d273a647434d6f0a0540b973bf31768",
+      "sourceName": "contracts/DGovGovernance.sol",
+      "solcConfig": {
+        "version": "0.8.24",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [
+        "@openzeppelin/contracts/utils/ReentrancyGuard.sol"
+      ],
+      "versionPragmas": [
+        "^0.8.24"
+      ],
+      "artifacts": [
+        "DGovGovernance",
+        "IDGovToken"
       ]
     }
   }

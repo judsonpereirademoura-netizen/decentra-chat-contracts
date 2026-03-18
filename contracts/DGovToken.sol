@@ -56,8 +56,9 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     uint256 public constant VESTING_INTERVAL = 365 days;
     uint256 public constant FOUNDER_PER_TRANCHE = 10_000_000 * 1e18;
 
-    // Marketing: lock individual de 180 dias por transferência do fundador para prestador
+    // Marketing: 180 dias de lock total + 180 dias de liberação linear gradual
     uint256 public constant MARKETING_LOCK_PERIOD = 180 days;
+    uint256 public constant MARKETING_VESTING_PERIOD = 180 days;
 
     // Distribuição progressiva por fase (6 fases de 26 leilões cada)
     // Fase 1: 7%, Fase 2: 14%, Fase 3: 21.5%, Fase 4: 21.5%, Fase 5: 18%, Fase 6: 18%
@@ -82,11 +83,13 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     uint256 public vestingStart;
     uint256 public founderTranchesClaimed;
 
-    // Marketing: tokens transferidos pelo fundador para prestadores com lock de 180 dias
+    // Marketing: tokens transferidos pelo fundador para prestadores
+    // 180 dias de lock total + 180 dias de liberação linear gradual
     struct MarketingLock {
-        uint256 amount;
-        uint256 unlockTime;  // timestamp quando desbloqueia
-        bool unlocked;
+        uint256 amount;        // Total de tokens no lock
+        uint256 lockEnd;       // Fim do lock total (180 dias após transferência)
+        uint256 vestingEnd;    // Fim do vesting linear (360 dias após transferência)
+        uint256 claimed;       // Tokens já liberados/claimed do vesting
     }
     mapping(address => MarketingLock[]) public marketingLocks;
     uint256 public totalMarketingDistributed;  // Total já distribuído pelo fundador
@@ -146,30 +149,8 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     uint256 public totalTokensBurned;
     uint256 public totalAuctionRevenue;
 
-    // =========================================================================
-    // STATE — GOVERNANCE
-    // =========================================================================
-    struct Proposal {
-        uint256 id;
-        string title;
-        string description;
-        address proposer;
-        uint256 forVotes;
-        uint256 againstVotes;
-        uint256 abstainVotes;
-        uint256 startTime;
-        uint256 endTime;
-        bool executed;
-        uint8 proposalType;
-        bytes executionData;
-        mapping(address => bool) hasVoted;
-    }
-
-    mapping(uint256 => Proposal) public proposals;
-    uint256 public proposalCount;
-    uint256 public constant PROPOSAL_DURATION = 7 days;
-    uint256 public constant PROPOSAL_THRESHOLD = 100_000 * 1e18;
-    uint256 public constant QUORUM = 5_000_000 * 1e18;
+    // Governance is handled by a separate DGovGovernance contract
+    address public governanceContract;
 
     // =========================================================================
     // EVENTS
@@ -192,9 +173,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     event TokensBurned(uint256 indexed auctionId, uint256 amount);
     event DividendsSent(uint256 indexed auctionId, uint256 amount);
 
-    event ProposalCreated(uint256 indexed proposalId, address indexed proposer, string title, uint8 proposalType);
-    event VoteCast(uint256 indexed proposalId, address indexed voter, uint8 support, uint256 weight);
-    event ProposalExecuted(uint256 indexed proposalId);
+    event GovernanceContractSet(address indexed governanceContract);
 
     // =========================================================================
     // CONSTRUCTOR
@@ -296,33 +275,51 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         // Transfer tokens from contract to recipient (locked)
         _transfer(address(this), recipient, amount);
 
-        // Create lock entry
-        uint256 unlockTime = block.timestamp + MARKETING_LOCK_PERIOD;
+        // Create lock entry: 180d lock + 180d linear vesting
+        uint256 lockEnd = block.timestamp + MARKETING_LOCK_PERIOD;
+        uint256 vestingEnd = lockEnd + MARKETING_VESTING_PERIOD;
         uint256 lockIndex = marketingLocks[recipient].length;
         marketingLocks[recipient].push(MarketingLock({
             amount: amount,
-            unlockTime: unlockTime,
-            unlocked: false
+            lockEnd: lockEnd,
+            vestingEnd: vestingEnd,
+            claimed: 0
         }));
 
-        emit MarketingTokensTransferred(recipient, amount, unlockTime, lockIndex);
+        emit MarketingTokensTransferred(recipient, amount, lockEnd, lockIndex);
     }
 
     /**
-     * @notice Prestador desbloqueia tokens de marketing após 180 dias.
-     * @param lockIndex Índice do lock a desbloquear
+     * @notice Prestador faz claim dos tokens liberados pelo vesting linear.
+     *         Após 180 dias de lock, inicia liberação linear por mais 180 dias.
+     * @param lockIndex Índice do lock a fazer claim
      */
-    function unlockMarketingTokens(uint256 lockIndex) external nonReentrant {
+    function claimMarketingVesting(uint256 lockIndex) external nonReentrant {
         require(lockIndex < marketingLocks[msg.sender].length, "Invalid lock index");
 
         MarketingLock storage lock = marketingLocks[msg.sender][lockIndex];
-        require(!lock.unlocked, "Already unlocked");
-        require(block.timestamp >= lock.unlockTime, "Lock period not expired");
+        require(block.timestamp >= lock.lockEnd, "Lock period not expired");
 
-        lock.unlocked = true;
-        totalMarketingLocked -= lock.amount;
+        uint256 vested = _getVestedAmount(lock);
+        uint256 claimable = vested - lock.claimed;
+        require(claimable > 0, "Nothing to claim");
 
-        emit MarketingTokensUnlocked(msg.sender, lockIndex, lock.amount);
+        lock.claimed += claimable;
+        totalMarketingLocked -= claimable;
+
+        emit MarketingTokensUnlocked(msg.sender, lockIndex, claimable);
+    }
+
+    /**
+     * @notice Calcula a quantidade total já vested (liberada) de um lock.
+     */
+    function _getVestedAmount(MarketingLock storage lock) internal view returns (uint256) {
+        if (block.timestamp < lock.lockEnd) return 0;
+        if (block.timestamp >= lock.vestingEnd) return lock.amount;
+
+        // Linear vesting: proporcional ao tempo decorrido no período de vesting
+        uint256 elapsed = block.timestamp - lock.lockEnd;
+        return (lock.amount * elapsed) / MARKETING_VESTING_PERIOD;
     }
 
     /**
@@ -345,11 +342,26 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         uint256 locked = 0;
         MarketingLock[] storage locks = marketingLocks[holder];
         for (uint256 i = 0; i < locks.length; i++) {
-            if (!locks[i].unlocked) {
-                locked += locks[i].amount;
-            }
+            uint256 vested = _getVestedAmount(locks[i]);
+            uint256 stillLocked = locks[i].amount - vested;
+            locked += stillLocked;
         }
         return locked;
+    }
+
+    /**
+     * @notice Retorna quanto um prestador pode fazer claim agora.
+     */
+    function getMarketingClaimable(address holder) public view returns (uint256) {
+        uint256 claimable = 0;
+        MarketingLock[] storage locks = marketingLocks[holder];
+        for (uint256 i = 0; i < locks.length; i++) {
+            uint256 vested = _getVestedAmount(locks[i]);
+            if (vested > locks[i].claimed) {
+                claimable += vested - locks[i].claimed;
+            }
+        }
+        return claimable;
     }
 
     /**
@@ -357,17 +369,25 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
      */
     function getMarketingLocks(address holder) external view returns (
         uint256[] memory amounts,
-        uint256[] memory unlockTimes,
-        bool[] memory unlockedStatus
+        uint256[] memory lockEnds,
+        uint256[] memory vestingEnds,
+        uint256[] memory claimedAmounts,
+        uint256[] memory claimableNow
     ) {
         MarketingLock[] storage locks = marketingLocks[holder];
-        amounts = new uint256[](locks.length);
-        unlockTimes = new uint256[](locks.length);
-        unlockedStatus = new bool[](locks.length);
-        for (uint256 i = 0; i < locks.length; i++) {
+        uint256 len = locks.length;
+        amounts = new uint256[](len);
+        lockEnds = new uint256[](len);
+        vestingEnds = new uint256[](len);
+        claimedAmounts = new uint256[](len);
+        claimableNow = new uint256[](len);
+        for (uint256 i = 0; i < len; i++) {
             amounts[i] = locks[i].amount;
-            unlockTimes[i] = locks[i].unlockTime;
-            unlockedStatus[i] = locks[i].unlocked;
+            lockEnds[i] = locks[i].lockEnd;
+            vestingEnds[i] = locks[i].vestingEnd;
+            claimedAmounts[i] = locks[i].claimed;
+            uint256 vested = _getVestedAmount(locks[i]);
+            claimableNow[i] = vested > locks[i].claimed ? vested - locks[i].claimed : 0;
         }
     }
 
@@ -599,110 +619,24 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         require(block.timestamp >= auction.endTime, "Auction still active");
         require(!auction.finalized, "Already finalized");
 
-        // Warmup check: auction must have been active for at least WARMUP_PERIOD
-        // (This is inherently satisfied since endTime = startTime + 24h > 2h)
-
         auction.finalized = true;
 
         Bid[] storage bids = auctionBids[auctionId];
 
         if (bids.length == 0) {
-            // No bids — burn all tokens
-            _burn(address(this), auction.tokensAvailable);
-            auction.tokensBurned = true;
-            auction.tokensBurnedAmount = auction.tokensAvailable;
-            totalTokensBurned += auction.tokensAvailable;
-
-            emit TokensBurned(auctionId, auction.tokensAvailable);
+            _burnUnsoldTokens(auctionId, auction.tokensAvailable);
             emit AuctionFinalized(auctionId, 0, auction.tokensAvailable, 0, 0);
             return;
         }
 
-        // Sort bids by pricePerUnit descending (simple insertion sort — gas ok for reasonable bid counts)
-        uint256[] memory sortedIndices = new uint256[](bids.length);
-        for (uint256 i = 0; i < bids.length; i++) {
-            sortedIndices[i] = i;
-        }
+        uint256[] memory sortedIndices = _sortBidsByPrice(auctionId);
+        (uint256 totalSold, uint256 totalRevenueLocal, uint256 remainingTokens) = _fillBids(auctionId, sortedIndices, auction.tokensAvailable);
+        _refundUnfilledBids(auctionId, sortedIndices);
 
-        // Insertion sort by pricePerUnit descending
-        for (uint256 i = 1; i < sortedIndices.length; i++) {
-            uint256 key = sortedIndices[i];
-            uint256 j = i;
-            while (j > 0 && bids[sortedIndices[j - 1]].pricePerUnit < bids[key].pricePerUnit) {
-                sortedIndices[j] = sortedIndices[j - 1];
-                j--;
-            }
-            sortedIndices[j] = key;
-        }
-
-        // Fill bids from highest price to lowest
-        uint256 remainingTokens = auction.tokensAvailable;
-        uint256 totalRevenueLocal = 0;
-        uint256 totalSold = 0;
-
-        for (uint256 i = 0; i < sortedIndices.length && remainingTokens > 0; i++) {
-            Bid storage bid = bids[sortedIndices[i]];
-
-            uint256 fillQty;
-            if (bid.quantity <= remainingTokens) {
-                fillQty = bid.quantity; // Full fill
-            } else {
-                fillQty = remainingTokens; // Partial fill
-            }
-
-            uint256 fillCost = (fillQty * bid.pricePerUnit) / 1e18;
-
-            bid.filled = true;
-            bid.filledQty = fillQty;
-
-            // Transfer $DGOV to bidder
-            _transfer(address(this), bid.bidder, fillQty);
-
-            // Unlock the locked escrow and deduct the cost
-            EscrowBalance storage bidderBal = escrowBalances[bid.bidder];
-            bidderBal.locked -= bid.totalCost; // Unlock full original lock
-
-            // If partial fill, refund the difference
-            uint256 refundAmount = bid.totalCost - fillCost;
-            if (refundAmount > 0) {
-                // Refund stays in escrow (total unchanged, locked reduced)
-                bid.refunded = true;
-                emit BidRefunded(auctionId, bid.bidder, sortedIndices[i], refundAmount);
-            }
-
-            // Deduct cost from escrow total
-            bidderBal.total -= fillCost;
-            totalEscrowBalance -= fillCost;
-
-            remainingTokens -= fillQty;
-            totalRevenueLocal += fillCost;
-            totalSold += fillQty;
-
-            emit BidFilled(auctionId, bid.bidder, sortedIndices[i], fillQty, fillCost);
-        }
-
-        // Refund unfilled bids (those that didn't get any fill)
-        for (uint256 i = 0; i < sortedIndices.length; i++) {
-            Bid storage bid = bids[sortedIndices[i]];
-            if (!bid.filled) {
-                // Fully unfilled — unlock escrow
-                EscrowBalance storage bidderBal = escrowBalances[bid.bidder];
-                bidderBal.locked -= bid.totalCost;
-                bid.refunded = true;
-
-                emit BidRefunded(auctionId, bid.bidder, sortedIndices[i], bid.totalCost);
-            }
-        }
-
-        // Burn remaining unsold tokens
         if (remainingTokens > 0) {
-            _burn(address(this), remainingTokens);
-            auction.tokensBurnedAmount = remainingTokens;
-            totalTokensBurned += remainingTokens;
-            emit TokensBurned(auctionId, remainingTokens);
+            _burnUnsoldTokens(auctionId, remainingTokens);
         }
 
-        // Send 100% of revenue to DividendPool for holders
         if (totalRevenueLocal > 0) {
             require(
                 IERC20(dchatToken).transfer(dividendPool, totalRevenueLocal),
@@ -718,6 +652,79 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         emit AuctionFinalized(auctionId, totalSold, remainingTokens, totalRevenueLocal, bids.length);
     }
 
+    function _sortBidsByPrice(uint256 auctionId) internal view returns (uint256[] memory) {
+        Bid[] storage bids = auctionBids[auctionId];
+        uint256[] memory sortedIndices = new uint256[](bids.length);
+        for (uint256 i = 0; i < bids.length; i++) {
+            sortedIndices[i] = i;
+        }
+        for (uint256 i = 1; i < sortedIndices.length; i++) {
+            uint256 key = sortedIndices[i];
+            uint256 j = i;
+            while (j > 0 && bids[sortedIndices[j - 1]].pricePerUnit < bids[key].pricePerUnit) {
+                sortedIndices[j] = sortedIndices[j - 1];
+                j--;
+            }
+            sortedIndices[j] = key;
+        }
+        return sortedIndices;
+    }
+
+    function _fillBids(
+        uint256 auctionId,
+        uint256[] memory sortedIndices,
+        uint256 tokensAvailable
+    ) internal returns (uint256 totalSold, uint256 totalRevenueLocal, uint256 remainingTokens) {
+        Bid[] storage bids = auctionBids[auctionId];
+        remainingTokens = tokensAvailable;
+
+        for (uint256 i = 0; i < sortedIndices.length && remainingTokens > 0; i++) {
+            Bid storage bid = bids[sortedIndices[i]];
+            uint256 fillQty = bid.quantity <= remainingTokens ? bid.quantity : remainingTokens;
+            uint256 fillCost = (fillQty * bid.pricePerUnit) / 1e18;
+
+            bid.filled = true;
+            bid.filledQty = fillQty;
+            _transfer(address(this), bid.bidder, fillQty);
+
+            EscrowBalance storage bidderBal = escrowBalances[bid.bidder];
+            bidderBal.locked -= bid.totalCost;
+
+            if (bid.totalCost > fillCost) {
+                bid.refunded = true;
+                emit BidRefunded(auctionId, bid.bidder, sortedIndices[i], bid.totalCost - fillCost);
+            }
+
+            bidderBal.total -= fillCost;
+            totalEscrowBalance -= fillCost;
+            remainingTokens -= fillQty;
+            totalRevenueLocal += fillCost;
+            totalSold += fillQty;
+
+            emit BidFilled(auctionId, bid.bidder, sortedIndices[i], fillQty, fillCost);
+        }
+    }
+
+    function _refundUnfilledBids(uint256 auctionId, uint256[] memory sortedIndices) internal {
+        Bid[] storage bids = auctionBids[auctionId];
+        for (uint256 i = 0; i < sortedIndices.length; i++) {
+            Bid storage bid = bids[sortedIndices[i]];
+            if (!bid.filled) {
+                escrowBalances[bid.bidder].locked -= bid.totalCost;
+                bid.refunded = true;
+                emit BidRefunded(auctionId, bid.bidder, sortedIndices[i], bid.totalCost);
+            }
+        }
+    }
+
+    function _burnUnsoldTokens(uint256 auctionId, uint256 amount) internal {
+        _burn(address(this), amount);
+        auctions[auctionId].tokensBurned = true;
+        auctions[auctionId].tokensBurnedAmount = amount;
+        totalTokensBurned += amount;
+        emit TokensBurned(auctionId, amount);
+    }
+
     // =========================================================================
     // AUCTION VIEW FUNCTIONS
     // =========================================================================
@@ -729,7 +736,17 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         uint256 highestPricePerUnit,
         uint256 totalBidCount,
         uint256 totalBidVolume,
-        bool finalized,
+        bool finalized
+    ) {
+        Auction storage a = auctions[auctionId];
+        return (
+            a.tokensAvailable, a.startTime, a.endTime,
+            a.highestPricePerUnit, a.totalBidCount, a.totalBidVolume,
+            a.finalized
+        );
+    }
+
+    function getAuctionResults(uint256 auctionId) external view returns (
         uint256 totalRevenue,
         uint256 tokensSold,
         uint256 tokensBurnedAmount,
@@ -737,12 +754,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     ) {
         Auction storage a = auctions[auctionId];
         bool active = (a.id > 0 && block.timestamp >= a.startTime && block.timestamp < a.endTime && !a.finalized);
-        return (
-            a.tokensAvailable, a.startTime, a.endTime,
-            a.highestPricePerUnit, a.totalBidCount, a.totalBidVolume,
-            a.finalized, a.totalRevenue, a.tokensSold,
-            a.tokensBurnedAmount, active
-        );
+        return (a.totalRevenue, a.tokensSold, a.tokensBurnedAmount, active);
     }
 
     function getBidInfo(uint256 auctionId, uint256 bidIndex) external view returns (
@@ -794,101 +806,32 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     }
 
     // =========================================================================
-    // GOVERNANCE (100% on-chain)
+    // TOKEN QUERY HELPERS (used by DGovGovernance contract)
     // =========================================================================
 
-    function createProposal(
-        string calldata title,
-        string calldata description,
-        uint8 proposalType,
-        bytes calldata executionData
-    ) external returns (uint256) {
-        require(balanceOf(msg.sender) >= PROPOSAL_THRESHOLD, "Insufficient DGOV to propose");
-        require(proposalType <= 3, "Invalid proposal type");
-        require(bytes(title).length > 0 && bytes(title).length <= 200, "Invalid title length");
-        require(bytes(description).length > 0 && bytes(description).length <= 5000, "Invalid description length");
-
-        proposalCount++;
-        Proposal storage p = proposals[proposalCount];
-        p.id = proposalCount;
-        p.title = title;
-        p.description = description;
-        p.proposer = msg.sender;
-        p.startTime = block.timestamp;
-        p.endTime = block.timestamp + PROPOSAL_DURATION;
-        p.proposalType = proposalType;
-        p.executionData = executionData;
-
-        emit ProposalCreated(proposalCount, msg.sender, title, proposalType);
-        return proposalCount;
+    /**
+     * @notice Total de $DGOV emitidos (não queimados). Base para quorum e threshold.
+     */
+    function getTotalEmitted() public view returns (uint256) {
+        return TOTAL_SUPPLY - totalTokensBurned;
     }
 
-    function castVote(uint256 proposalId, uint8 support) external {
-        Proposal storage p = proposals[proposalId];
-        require(p.id > 0, "Proposal does not exist");
-        require(block.timestamp >= p.startTime, "Voting not started");
-        require(block.timestamp < p.endTime, "Voting ended");
-        require(!p.hasVoted[msg.sender], "Already voted");
-        require(support <= 2, "Invalid vote");
-
-        uint256 weight = balanceOf(msg.sender);
-        require(weight > 0, "No voting power");
-
-        p.hasVoted[msg.sender] = true;
-
-        if (support == 0) {
-            p.againstVotes += weight;
-        } else if (support == 1) {
-            p.forVotes += weight;
-        } else {
-            p.abstainVotes += weight;
+    /**
+     * @notice Retorna o peso de vesting de um holder (tokens locked que contam para voto).
+     *         Founder: tokens não-claimed do vesting. Marketing: tokens locked.
+     */
+    function getVestingWeight(address holder) external view returns (uint256) {
+        if (holder == founder) {
+            uint256 claimed = founderTranchesClaimed * FOUNDER_PER_TRANCHE;
+            return FOUNDER_ALLOCATION - claimed;
         }
-
-        emit VoteCast(proposalId, msg.sender, support, weight);
+        return getMarketingLockedBalance(holder);
     }
 
-    function executeProposal(uint256 proposalId) external nonReentrant {
-        Proposal storage p = proposals[proposalId];
-        require(p.id > 0, "Proposal does not exist");
-        require(block.timestamp >= p.endTime, "Voting not ended");
-        require(!p.executed, "Already executed");
-
-        uint256 totalVotes = p.forVotes + p.againstVotes + p.abstainVotes;
-        require(totalVotes >= QUORUM, "Quorum not reached");
-        require(p.forVotes > p.againstVotes, "Proposal not passed");
-
-        p.executed = true;
-
-        if (p.executionData.length > 0) {
-            (bool success, ) = address(this).call(p.executionData);
-            require(success, "Execution failed");
-        }
-
-        emit ProposalExecuted(proposalId);
-    }
-
-    function getProposalInfo(uint256 proposalId) external view returns (
-        string memory title,
-        string memory description,
-        address proposer,
-        uint256 forVotes,
-        uint256 againstVotes,
-        uint256 abstainVotes,
-        uint256 startTime,
-        uint256 endTime,
-        bool executed,
-        uint8 proposalType
-    ) {
-        Proposal storage p = proposals[proposalId];
-        return (
-            p.title, p.description, p.proposer,
-            p.forVotes, p.againstVotes, p.abstainVotes,
-            p.startTime, p.endTime, p.executed, p.proposalType
-        );
-    }
-
-    function hasVoted(uint256 proposalId, address voter) external view returns (bool) {
-        return proposals[proposalId].hasVoted[voter];
+    function setGovernanceContract(address _governance) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(_governance != address(0), "Invalid address");
+        governanceContract = _governance;
+        emit GovernanceContractSet(_governance);
     }
 
     // =========================================================================
@@ -901,25 +844,30 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         uint256 _totalBurned,
         uint256 _auctionRevenue,
         uint256 _currentAuction,
-        uint256 _remainingAuctions,
-        uint256 _founderClaimed,
-        uint256 _marketingDistributed,
-        uint256 _proposalCount,
-        uint256 _registeredUsers
+        uint256 _remainingAuctions
     ) {
         uint256 locked = balanceOf(address(this));
-        uint256 founderClaimed = founderTranchesClaimed * FOUNDER_PER_TRANCHE;
         return (
             TOTAL_SUPPLY,
             totalSupply() - locked,
             totalTokensBurned,
             totalAuctionRevenue,
             currentAuctionId,
-            TOTAL_AUCTIONS - currentAuctionId,
-            founderClaimed,
+            TOTAL_AUCTIONS - currentAuctionId
+        );
+    }
+
+    function getProtocolStatsExtended() external view returns (
+        uint256 _founderClaimed,
+        uint256 _marketingDistributed,
+        uint256 _registeredUsers,
+        uint256 _totalEmitted
+    ) {
+        return (
+            founderTranchesClaimed * FOUNDER_PER_TRANCHE,
             totalMarketingDistributed,
-            proposalCount,
-            totalRegisteredUsers
+            totalRegisteredUsers,
+            getTotalEmitted()
         );
     }
 

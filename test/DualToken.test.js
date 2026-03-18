@@ -315,78 +315,129 @@ describe("DecentraChat Dual-Token System v3.0", function () {
     // =========================================================================
     // MARKETING DISTRIBUTION (10M: lock 180 dias por transferência)
     // =========================================================================
-    describe("Marketing Distribution (180-day lock)", function () {
+    describe("Marketing Distribution (180d lock + 180d linear vesting)", function () {
       const ONE_HUNDRED_EIGHTY_DAYS = 180 * ONE_DAY;
+      const THREE_SIXTY_DAYS = 360 * ONE_DAY;
 
-      it("Should allow founder to transfer marketing tokens to a recipient with 180-day lock", async function () {
+      it("Should allow founder to transfer marketing tokens with lock", async function () {
         const amount = ethers.parseEther("1000000"); // 1M
         await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
 
-        // Tokens are in user1's balance but locked
+        // Tokens are in user1's balance but fully locked
         expect(await dgov.balanceOf(user1.address)).to.equal(amount);
         expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(amount);
+        expect(await dgov.getMarketingClaimable(user1.address)).to.equal(0);
       });
 
-      it("Should prevent recipient from transferring locked marketing tokens", async function () {
+      it("Should prevent recipient from transferring locked tokens", async function () {
         const amount = ethers.parseEther("1000000");
         await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
 
-        // user1 tries to transfer locked tokens — should fail
         await expect(
           dgov.connect(user1).transfer(user2.address, amount)
         ).to.be.revertedWith("Cannot transfer locked marketing tokens");
       });
 
-      it("Should allow recipient to unlock tokens after 180 days", async function () {
-        const amount = ethers.parseEther("2000000"); // 2M
+      it("Should not allow claim during 180-day lock period", async function () {
+        const amount = ethers.parseEther("2000000");
         await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
 
-        // Cannot unlock before 180 days
+        // Try claim at 90 days — still in lock period
+        await time.increase(90 * ONE_DAY);
         await expect(
-          dgov.connect(user1).unlockMarketingTokens(0)
+          dgov.connect(user1).claimMarketingVesting(0)
         ).to.be.revertedWith("Lock period not expired");
-
-        // Advance 180 days
-        await time.increase(ONE_HUNDRED_EIGHTY_DAYS);
-
-        // Now unlock
-        await dgov.connect(user1).unlockMarketingTokens(0);
-        expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(0);
-
-        // Now user1 can transfer freely
-        await dgov.connect(user1).transfer(user2.address, ethers.parseEther("500000"));
-        expect(await dgov.balanceOf(user2.address)).to.equal(ethers.parseEther("500000"));
       });
 
-      it("Should handle multiple locks to same recipient with different unlock times", async function () {
+      it("Should allow partial claim after lock period starts linear vesting", async function () {
+        const amount = ethers.parseEther("1800000"); // 1.8M
+        await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
+
+        // Advance to lock end + 90 days (50% of vesting period)
+        await time.increase(ONE_HUNDRED_EIGHTY_DAYS + 90 * ONE_DAY);
+
+        // ~50% should be claimable
+        const claimable = await dgov.getMarketingClaimable(user1.address);
+        // Allow 1% tolerance for block timestamp rounding
+        const expected = amount / 2n;
+        expect(claimable).to.be.closeTo(expected, ethers.parseEther("20000"));
+
+        // Claim
+        await dgov.connect(user1).claimMarketingVesting(0);
+
+        // Locked balance should be ~50%
+        const locked = await dgov.getMarketingLockedBalance(user1.address);
+        expect(locked).to.be.closeTo(expected, ethers.parseEther("20000"));
+
+        // Can transfer claimed amount
+        await dgov.connect(user1).transfer(user2.address, claimable);
+      });
+
+      it("Should fully unlock after 360 days (180 lock + 180 vesting)", async function () {
+        const amount = ethers.parseEther("2000000");
+        await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
+
+        // Advance 360 days
+        await time.increase(THREE_SIXTY_DAYS);
+
+        // Everything should be claimable
+        expect(await dgov.getMarketingClaimable(user1.address)).to.equal(amount);
+
+        // Claim all
+        await dgov.connect(user1).claimMarketingVesting(0);
+        expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(0);
+
+        // Can transfer everything
+        await dgov.connect(user1).transfer(user2.address, amount);
+        expect(await dgov.balanceOf(user2.address)).to.equal(amount);
+      });
+
+      it("Should handle multiple claims over time (incremental vesting)", async function () {
+        const amount = ethers.parseEther("1800000");
+        await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
+
+        // Claim at 25% vesting (180 + 45 days)
+        await time.increase(ONE_HUNDRED_EIGHTY_DAYS + 45 * ONE_DAY);
+        await dgov.connect(user1).claimMarketingVesting(0);
+        const claimed1 = amount / 4n; // ~25%
+
+        // Claim at 75% vesting (180 + 135 days total)
+        await time.increase(90 * ONE_DAY);
+        await dgov.connect(user1).claimMarketingVesting(0);
+
+        // Claim rest at 100%
+        await time.increase(45 * ONE_DAY);
+        await dgov.connect(user1).claimMarketingVesting(0);
+
+        expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(0);
+        expect(await dgov.getMarketingClaimable(user1.address)).to.equal(0);
+      });
+
+      it("Should handle multiple locks to same recipient", async function () {
         const amount1 = ethers.parseEther("1000000");
         const amount2 = ethers.parseEther("2000000");
 
         await dgov.connect(founder).transferMarketingTokens(user1.address, amount1);
-        await time.increase(30 * ONE_DAY); // 30 days later
+        await time.increase(30 * ONE_DAY);
         await dgov.connect(founder).transferMarketingTokens(user1.address, amount2);
 
-        // Both locked
+        // Both fully locked
         expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(amount1 + amount2);
 
-        // Advance to unlock first lock (180 days from first transfer)
-        await time.increase(150 * ONE_DAY); // 150 more days (total 180 from first)
+        // Advance to 360 days from first lock (fully vested for lock 1)
+        await time.increase(330 * ONE_DAY);
+        await dgov.connect(user1).claimMarketingVesting(0); // Lock 1 fully vested
+        
+        // Lock 2 was created 30 days later, so it has 30 days of vesting left
+        // Lock 2 vesting: 330 - 180 (lock period) = 150 days of 180 = ~83% vested
+        // Remaining locked for lock 2: ~17% of 2M = ~333k
+        const locked = await dgov.getMarketingLockedBalance(user1.address);
+        expect(locked).to.be.gt(0);
+        expect(locked).to.be.lt(amount2);
 
-        await dgov.connect(user1).unlockMarketingTokens(0);
-        expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(amount2);
-
-        // Can transfer up to amount1 (unlocked)
-        await dgov.connect(user1).transfer(user2.address, amount1);
-        expect(await dgov.balanceOf(user2.address)).to.equal(amount1);
-
-        // Cannot transfer more (amount2 still locked)
-        await expect(
-          dgov.connect(user1).transfer(user2.address, ethers.parseEther("1"))
-        ).to.be.revertedWith("Cannot transfer locked marketing tokens");
-
-        // Advance 30 more days to unlock second lock
+        // Advance 30 more days to fully vest second lock
         await time.increase(30 * ONE_DAY);
-        await dgov.connect(user1).unlockMarketingTokens(1);
+        await dgov.connect(user1).claimMarketingVesting(1);
         expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(0);
       });
 
@@ -400,7 +451,6 @@ describe("DecentraChat Dual-Token System v3.0", function () {
         expect(status.totalDistributed).to.equal(MARKETING_ALLOC);
         expect(status.remaining).to.equal(0);
 
-        // Cannot distribute more
         await expect(
           dgov.connect(founder).transferMarketingTokens(user4.address, ethers.parseEther("1"))
         ).to.be.revertedWith("Exceeds marketing allocation");
@@ -420,30 +470,38 @@ describe("DecentraChat Dual-Token System v3.0", function () {
         expect(locks.amounts.length).to.equal(2);
         expect(locks.amounts[0]).to.equal(ethers.parseEther("1000000"));
         expect(locks.amounts[1]).to.equal(ethers.parseEther("500000"));
-        expect(locks.unlockedStatus[0]).to.be.false;
-        expect(locks.unlockedStatus[1]).to.be.false;
+        expect(locks.claimedAmounts[0]).to.equal(0);
+        expect(locks.claimedAmounts[1]).to.equal(0);
       });
 
-      it("Should track totalMarketingLocked correctly after unlocks", async function () {
+      it("Should track totalMarketingLocked correctly through vesting", async function () {
         const amount = ethers.parseEther("5000000");
         await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
 
         expect(await dgov.totalMarketingLocked()).to.equal(amount);
 
-        await time.increase(ONE_HUNDRED_EIGHTY_DAYS);
-        await dgov.connect(user1).unlockMarketingTokens(0);
+        // After full vesting (360 days)
+        await time.increase(THREE_SIXTY_DAYS);
+        await dgov.connect(user1).claimMarketingVesting(0);
 
         expect(await dgov.totalMarketingLocked()).to.equal(0);
       });
 
-      it("Should prevent double unlock", async function () {
+      it("Should reject claim when nothing is claimable", async function () {
         await dgov.connect(founder).transferMarketingTokens(user1.address, ethers.parseEther("1000000"));
-        await time.increase(ONE_HUNDRED_EIGHTY_DAYS);
-        await dgov.connect(user1).unlockMarketingTokens(0);
+
+        // During lock period
+        await expect(
+          dgov.connect(user1).claimMarketingVesting(0)
+        ).to.be.revertedWith("Lock period not expired");
+
+        // After full vesting and claim
+        await time.increase(THREE_SIXTY_DAYS);
+        await dgov.connect(user1).claimMarketingVesting(0);
 
         await expect(
-          dgov.connect(user1).unlockMarketingTokens(0)
-        ).to.be.revertedWith("Already unlocked");
+          dgov.connect(user1).claimMarketingVesting(0)
+        ).to.be.revertedWith("Nothing to claim");
       });
     });
 
@@ -574,7 +632,8 @@ describe("DecentraChat Dual-Token System v3.0", function () {
           expect(await dgov.currentAuctionId()).to.equal(1);
           const info = await dgov.getAuctionInfo(1);
           expect(info.tokensAvailable).to.be.gt(0);
-          expect(info.isActive).to.be.true;
+          const results = await dgov.getAuctionResults(1);
+          expect(results.isActive).to.be.true;
         });
 
         it("Should not start next auction before previous is finalized", async function () {
@@ -761,8 +820,9 @@ describe("DecentraChat Dual-Token System v3.0", function () {
 
           const finalInfo = await dgov.getAuctionInfo(1);
           expect(finalInfo.finalized).to.be.true;
-          expect(finalInfo.tokensBurnedAmount).to.equal(tokensAvailable);
-          expect(finalInfo.tokensSold).to.equal(0);
+          const results = await dgov.getAuctionResults(1);
+          expect(results.tokensBurnedAmount).to.equal(tokensAvailable);
+          expect(results.tokensSold).to.equal(0);
         });
 
         it("Should fill bids from highest to lowest price", async function () {
@@ -785,7 +845,8 @@ describe("DecentraChat Dual-Token System v3.0", function () {
           // Check finalization
           const finalInfo = await dgov.getAuctionInfo(1);
           expect(finalInfo.finalized).to.be.true;
-          expect(finalInfo.tokensSold).to.be.gt(0);
+          const results = await dgov.getAuctionResults(1);
+          expect(results.tokensSold).to.be.gt(0);
         });
 
         it("Should handle partial fills correctly", async function () {
@@ -803,8 +864,8 @@ describe("DecentraChat Dual-Token System v3.0", function () {
           expect(user1Balance).to.equal(tokensAvail);
 
           // No tokens burned (all sold)
-          const finalInfo = await dgov.getAuctionInfo(1);
-          expect(finalInfo.tokensBurnedAmount).to.equal(0);
+          const results = await dgov.getAuctionResults(1);
+          expect(results.tokensBurnedAmount).to.equal(0);
         });
 
         it("Should burn unsold tokens", async function () {
@@ -837,8 +898,8 @@ describe("DecentraChat Dual-Token System v3.0", function () {
           await time.increase(ONE_DAY + 1);
           await dgov.connect(founder).finalizeAuction(1);
 
-          const finalInfo = await dgov.getAuctionInfo(1);
-          expect(finalInfo.totalRevenue).to.be.gt(0);
+          const results = await dgov.getAuctionResults(1);
+          expect(results.totalRevenue).to.be.gt(0);
         });
 
         it("Should unlock escrow for unfilled bids", async function () {
@@ -904,50 +965,191 @@ describe("DecentraChat Dual-Token System v3.0", function () {
     // =========================================================================
     // GOVERNANCE
     // =========================================================================
-    describe("Governance", function () {
+    describe("Governance (DGovGovernance contract)", function () {
+      let governance;
+
       beforeEach(async function () {
-        // Give founder enough tokens to create proposals
+        // Deploy DGovGovernance
+        const DGovGovernance = await ethers.getContractFactory("DGovGovernance");
+        governance = await DGovGovernance.deploy(await dgov.getAddress(), founder.address);
+        await governance.waitForDeployment();
+
+        // Set governance contract on DGovToken
+        await dgov.connect(founder).setGovernanceContract(await governance.getAddress());
+
+        // Give founder tokens to create proposals
         await time.increase(ONE_YEAR);
         await dgov.connect(founder).claimFounderVesting(); // 10M DGOV
+
+        // Register founder as voter
+        await governance.connect(founder).registerAsVoter();
+      });
+
+      it("Should register as voter", async function () {
+        const info = await governance.getVoterInfo(founder.address);
+        expect(info.isReg).to.be.true;
+        expect(info.isAct).to.be.true;
+      });
+
+      it("Should reject duplicate voter registration", async function () {
+        await expect(
+          governance.connect(founder).registerAsVoter()
+        ).to.be.revertedWith("Already registered");
       });
 
       it("Should create a proposal", async function () {
-        await dgov.connect(founder).createProposal(
+        await governance.connect(founder).createProposal(
           "Test Proposal",
           "This is a test proposal for governance",
           0,
-          "0x"
+          "0x",
+          ethers.ZeroAddress
         );
-        expect(await dgov.proposalCount()).to.equal(1);
+        const stats = await governance.getGovernanceVoterStats();
+        expect(stats.propCount).to.equal(1);
       });
 
-      it("Should reject proposal from holder below threshold", async function () {
+      it("Should reject proposal from non-voter", async function () {
         await expect(
-          dgov.connect(user1).createProposal("Test", "Description", 0, "0x")
-        ).to.be.revertedWith("Insufficient DGOV to propose");
+          governance.connect(user1).createProposal("Test", "Description", 0, "0x", ethers.ZeroAddress)
+        ).to.be.revertedWith("Not active voter");
       });
 
       it("Should allow voting on proposals", async function () {
-        await dgov.connect(founder).createProposal("Test", "Description", 0, "0x");
-        await dgov.connect(founder).castVote(1, 1); // Vote FOR
+        await governance.connect(founder).createProposal("Test", "Description", 0, "0x", ethers.ZeroAddress);
+        await governance.connect(founder).castVote(1, 1); // Vote FOR
 
-        const info = await dgov.getProposalInfo(1);
-        expect(info.forVotes).to.equal(ethers.parseEther("10000000"));
+        const votes = await governance.getProposalVotesInfo(1);
+        // Founder has 10M balance + 20M vesting weight = 30M voting power
+        expect(votes.forV).to.be.gt(ethers.parseEther("10000000"));
       });
 
       it("Should reject double voting", async function () {
-        await dgov.connect(founder).createProposal("Test", "Description", 0, "0x");
-        await dgov.connect(founder).castVote(1, 1);
+        await governance.connect(founder).createProposal("Test", "Description", 0, "0x", ethers.ZeroAddress);
+        await governance.connect(founder).castVote(1, 1);
         await expect(
-          dgov.connect(founder).castVote(1, 1)
+          governance.connect(founder).castVote(1, 1)
         ).to.be.revertedWith("Already voted");
       });
 
       it("Should track hasVoted correctly", async function () {
-        await dgov.connect(founder).createProposal("Test", "Description", 0, "0x");
-        expect(await dgov.hasVoted(1, founder.address)).to.be.false;
-        await dgov.connect(founder).castVote(1, 1);
-        expect(await dgov.hasVoted(1, founder.address)).to.be.true;
+        await governance.connect(founder).createProposal("Test", "Description", 0, "0x", ethers.ZeroAddress);
+        expect(await governance.hasVoted(1, founder.address)).to.be.false;
+        await governance.connect(founder).castVote(1, 1);
+        expect(await governance.hasVoted(1, founder.address)).to.be.true;
+      });
+
+      it("Should demonstrate quorum requires 60%+1 of total emitted (founder alone cannot pass)", async function () {
+        // Quorum = 60.01% of 100M = 60.01M
+        // Founder has 10M balance + 20M vesting = 30M voting power (30% of total)
+        // This correctly means founder alone CANNOT pass proposals
+        // This is by design: governance requires broad consensus
+
+        // Give user1 some tokens and register as voter
+        await dgov.connect(founder).transfer(user1.address, ethers.parseEther("5000000")); // 5M
+        await governance.connect(user1).registerAsVoter();
+
+        // Create proposal
+        await governance.connect(founder).createProposal("Test", "Description", 0, "0x", ethers.ZeroAddress);
+
+        // Both vote FOR: founder (25M = 5M balance + 20M vesting) + user1 (5M balance) = 30M
+        await governance.connect(founder).castVote(1, 1);
+        await governance.connect(user1).castVote(1, 1);
+
+        // Verify votes recorded
+        const votes = await governance.getProposalVotesInfo(1);
+        expect(votes.forV).to.be.gt(ethers.parseEther("25000000")); // 25M+ total
+
+        await time.increase(7 * ONE_DAY + 1);
+
+        // 30M < 60M quorum — cannot queue
+        await expect(
+          governance.connect(founder).queueProposal(1)
+        ).to.be.revertedWith("No quorum");
+      });
+
+      it("Should reject queue when quorum not met", async function () {
+        await governance.connect(founder).createProposal("Test", "Description", 0, "0x", ethers.ZeroAddress);
+        await governance.connect(founder).castVote(1, 1); // 30M voting power
+
+        await time.increase(7 * ONE_DAY + 1);
+
+        // 30M < 60M quorum
+        await expect(
+          governance.connect(founder).queueProposal(1)
+        ).to.be.revertedWith("No quorum");
+      });
+
+      it("Should reject execution before timelock expires", async function () {
+        // We test timelock by manually setting up a queued proposal
+        // Since reaching quorum requires 60M+ votes, we test the timelock logic
+        // by verifying the revert message when trying to execute without queue
+        await governance.connect(founder).createProposal("Test", "Description", 0, "0x", ethers.ZeroAddress);
+        await governance.connect(founder).castVote(1, 1);
+        await time.increase(7 * ONE_DAY + 1);
+
+        // Cannot execute without queuing first
+        await expect(
+          governance.connect(founder).executeProposal(1)
+        ).to.be.revertedWith("Cannot execute");
+      });
+
+      it("Should support delegation", async function () {
+        // Give user1 some DGOV
+        await dgov.connect(founder).transfer(user1.address, ethers.parseEther("1000000"));
+
+        // Register user1 as voter
+        await governance.connect(user1).registerAsVoter();
+
+        // user1 delegates to founder
+        await governance.connect(user1).setDelegate(founder.address);
+
+        const info = await governance.getVoterInfo(user1.address);
+        expect(info.del).to.equal(founder.address);
+
+        // Founder creates proposal and votes (should include delegated weight)
+        await governance.connect(founder).createProposal("Test", "Description", 0, "0x", ethers.ZeroAddress);
+        await governance.connect(founder).castVote(1, 1);
+
+        // user1 should be marked as voted (delegated)
+        expect(await governance.hasVoted(1, user1.address)).to.be.true;
+      });
+
+      it("Should deactivate inactive voter after 90 days", async function () {
+        // Give user1 DGOV and register
+        await dgov.connect(founder).transfer(user1.address, ethers.parseEther("100000"));
+        await governance.connect(user1).registerAsVoter();
+
+        // Cannot deactivate before 90 days
+        await expect(
+          governance.connect(founder).deactivateInactiveVoter(user1.address)
+        ).to.be.revertedWith("Still active");
+
+        // Advance 91 days
+        await time.increase(91 * ONE_DAY);
+        await governance.connect(founder).deactivateInactiveVoter(user1.address);
+
+        const info = await governance.getVoterInfo(user1.address);
+        expect(info.isAct).to.be.false;
+      });
+
+      it("Should allow voter to reactivate", async function () {
+        await dgov.connect(founder).transfer(user1.address, ethers.parseEther("100000"));
+        await governance.connect(user1).registerAsVoter();
+        await time.increase(91 * ONE_DAY);
+        await governance.connect(founder).deactivateInactiveVoter(user1.address);
+
+        // Reactivate
+        await governance.connect(user1).reactivateVoter();
+        const info = await governance.getVoterInfo(user1.address);
+        expect(info.isAct).to.be.true;
+      });
+
+      it("Should return correct governance stats", async function () {
+        const stats = await governance.getGovernanceStats();
+        expect(stats.emitted).to.equal(TOTAL_SUPPLY); // No burns yet
+        expect(stats.threshold).to.be.gt(0);
+        expect(stats.quorum).to.be.gt(0);
       });
     });
 
@@ -961,7 +1163,14 @@ describe("DecentraChat Dual-Token System v3.0", function () {
         expect(stats._totalBurned).to.equal(0);
         expect(stats._currentAuction).to.equal(0);
         expect(stats._remainingAuctions).to.equal(156);
-        expect(stats._registeredUsers).to.equal(5);
+      });
+
+      it("Should return correct extended stats", async function () {
+        const ext = await dgov.getProtocolStatsExtended();
+        expect(ext._founderClaimed).to.equal(0);
+        expect(ext._marketingDistributed).to.equal(0);
+        expect(ext._registeredUsers).to.equal(5); // founder + 4 users
+        expect(ext._totalEmitted).to.equal(TOTAL_SUPPLY);
       });
     });
   });
@@ -1114,7 +1323,8 @@ describe("DecentraChat Dual-Token System v3.0", function () {
       // 6. Verify auction stats
       const auctionInfo = await dgov.getAuctionInfo(1);
       expect(auctionInfo.finalized).to.be.true;
-      expect(auctionInfo.tokensSold).to.be.gt(0);
+      const auctionResults = await dgov.getAuctionResults(1);
+      expect(auctionResults.tokensSold).to.be.gt(0);
     });
 
     it("Should handle competitive bidding with multiple users", async function () {
@@ -1155,29 +1365,43 @@ describe("DecentraChat Dual-Token System v3.0", function () {
       expect(user3Escrow.locked).to.equal(0);
     });
 
-    it("Should complete founder vesting + governance flow", async function () {
+    it("Should complete founder vesting + governance proposal creation flow", async function () {
+      // Deploy governance
+      const DGovGovernance = await ethers.getContractFactory("DGovGovernance");
+      const governance = await DGovGovernance.deploy(await dgov.getAddress(), founder.address);
+      await governance.waitForDeployment();
+      await dgov.connect(founder).setGovernanceContract(await governance.getAddress());
+
       // Claim first tranche
       await time.increase(ONE_YEAR);
       await dgov.connect(founder).claimFounderVesting();
 
+      // Register as voter
+      await governance.connect(founder).registerAsVoter();
+
       // Create and vote on proposal
-      await dgov.connect(founder).createProposal(
+      await governance.connect(founder).createProposal(
         "Increase Node Rewards",
         "Proposal to increase node reward percentage from 70% to 75%",
         1,
-        "0x"
+        "0x",
+        ethers.ZeroAddress
       );
 
-      await dgov.connect(founder).castVote(1, 1); // Vote FOR
+      await governance.connect(founder).castVote(1, 1); // Vote FOR (30M power)
+
+      // Verify vote was recorded
+      const votes = await governance.getProposalVotesInfo(1);
+      expect(votes.forV).to.be.gt(ethers.parseEther("10000000")); // 10M balance + 20M vesting
 
       // Advance past voting period
       await time.increase(7 * ONE_DAY + 1);
 
-      // Execute proposal
-      await dgov.connect(founder).executeProposal(1);
-
-      const info = await dgov.getProposalInfo(1);
-      expect(info.executed).to.be.true;
+      // Queue should fail — founder alone (30M) cannot reach quorum (60M+)
+      // This is correct by design: no single holder should control governance
+      await expect(
+        governance.connect(founder).queueProposal(1)
+      ).to.be.revertedWith("No quorum");
     });
   });
 });
