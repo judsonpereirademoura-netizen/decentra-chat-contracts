@@ -3,7 +3,7 @@
   "network": "hardhat",
   "chainId": 31337,
   "deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "timestamp": "2026-03-18T15:09:21.054Z",
+  "timestamp": "2026-03-18T15:22:47.749Z",
   "contracts": {
     "DChatStablecoin": {
       "address": "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
