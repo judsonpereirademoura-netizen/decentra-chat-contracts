@@ -83,7 +83,7 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     // ADDRESSES
     // =========================================================================
     address public dividendPool;     // Smart contract de dividendos $DGOV
-    address public reserveWallet;    // Wallet da reserva operacional (contrato ReserveWallet)
+    address public reserveWallet;    // Carteira pessoal do fundador para despesas operacionais (hosting, Twilio, infra)
     address public founder;          // Wallet do fundador
 
     // =========================================================================

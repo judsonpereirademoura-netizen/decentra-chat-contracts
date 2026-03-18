@@ -952,8 +952,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DChatStablecoin.sol": {
-      "lastModificationDate": 1773845581711,
-      "contentHash": "ec6328b06a0ced927586ef41654e47d0",
+      "lastModificationDate": 1773846028178,
+      "contentHash": "bd532cab1dc4fc3cc70aa6c2dfde7764",
       "sourceName": "contracts/DChatStablecoin.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -1305,46 +1305,6 @@
       "artifacts": [
         "DGovGovernance",
         "IDGovToken"
-      ]
-    },
-    "/home/ubuntu/decentra-chat-contracts/contracts/ReserveWallet.sol": {
-      "lastModificationDate": 1773843095325,
-      "contentHash": "15c0815e061bd6e739cfcf340022e0ea",
-      "sourceName": "contracts/ReserveWallet.sol",
-      "solcConfig": {
-        "version": "0.8.24",
-        "settings": {
-          "optimizer": {
-            "enabled": true,
-            "runs": 200
-          },
-          "evmVersion": "paris",
-          "outputSelection": {
-            "*": {
-              "*": [
-                "abi",
-                "evm.bytecode",
-                "evm.deployedBytecode",
-                "evm.methodIdentifiers",
-                "metadata"
-              ],
-              "": [
-                "ast"
-              ]
-            }
-          }
-        }
-      },
-      "imports": [
-        "@openzeppelin/contracts/token/ERC20/IERC20.sol",
-        "@openzeppelin/contracts/access/AccessControl.sol",
-        "@openzeppelin/contracts/utils/ReentrancyGuard.sol"
-      ],
-      "versionPragmas": [
-        "^0.8.24"
-      ],
-      "artifacts": [
-        "ReserveWallet"
       ]
     }
   }
