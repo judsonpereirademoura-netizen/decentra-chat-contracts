@@ -14,7 +14,7 @@ interface IDGovTokenForDividend {
     function totalSupply() external view returns (uint256);
     function getVestingWeight(address holder) external view returns (uint256); // [F-17]
     function founder() external view returns (address); // [F-17]
-    function totalMarketingDistributed() external view returns (uint256); // [F-17]
+    function totalMarketingLocked() external view returns (uint256); // [SA-05] Usar locked, não distributed
     function FOUNDER_ALLOCATION() external view returns (uint256); // [F-17]
 }
 
@@ -123,9 +123,10 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
 
     /**
      * @notice Set vesting weight for an address (founder/marketing).
-     * @dev Tokens em vesting contam para dividendos desde dia 1.
-     *      Quando o vesting é liberado (tokens transferidos para a carteira),
-     *      o admin deve reduzir o vestingWeight correspondente.
+     * @dev [SA-12] DEPRECATED: Com F-17, o vesting weight é calculado automaticamente
+     *      via DGovToken.getVestingWeight(). Esta função é mantida apenas como
+     *      fallback de emergência. O sistema usa max(auto, manual) para segurança.
+     *      Tokens em vesting contam para dividendos desde dia 1.
      */
     function setVestingWeight(address holder, uint256 weight) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(holder != address(0), "Invalid holder");
@@ -142,7 +143,8 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
 
     /**
      * @notice Reduce vesting weight when tokens are unlocked (claimed from vesting).
-     * @dev Called by admin when founder/marketing claims a vesting tranche.
+     * @dev [SA-12] DEPRECATED: Com F-17, o vesting weight é atualizado automaticamente.
+     *      Mantida como fallback de emergência.
      */
     function reduceVestingWeight(address holder, uint256 reduction) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(holder != address(0), "Invalid holder");
@@ -175,6 +177,27 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
     function depositAuctionRevenue(uint256 amount) external onlyRole(DEPOSITOR_ROLE) { // [F-16]
         _depositInternal(amount, "auction");
         totalFromAuctions += amount;
+    }
+
+    /**
+     * @notice [AUTO-03] Notifica o DividendPool que tokens foram depositados via transfer direto.
+     *         Chamada automaticamente pelo DGovToken.finalizeAuction após transferir receita.
+     *         Não faz transferFrom — os tokens já estão no contrato.
+     * @param amount Quantidade de $DCHAT já transferida para este contrato
+     */
+    function notifyAuctionDeposit(uint256 amount) external {
+        require(msg.sender == dgovTokenAddress, "Only DGovToken"); // [AUTO-03] Só o DGovToken pode notificar
+        require(amount > 0, "Amount must be > 0");
+
+        uint256 totalWeight = _getTotalDividendWeight();
+        if (totalWeight > 0) {
+            pointsPerToken += (amount * PRECISION) / totalWeight;
+        }
+
+        totalDividendsDeposited += amount;
+        totalFromAuctions += amount;
+
+        emit DividendsDeposited(amount, pointsPerToken, block.timestamp, "auction-auto");
     }
 
     function _depositInternal(uint256 amount, string memory source) internal {
@@ -270,8 +293,8 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
         // Calcular vesting weight automático total
         // Founder vesting weight
         uint256 founderAutoWeight = dgovToken.getVestingWeight(dgovToken.founder());
-        // Marketing: tokens distribuídos para prestadores (estão locked)
-        uint256 marketingAutoWeight = dgovToken.totalMarketingDistributed();
+        // [SA-05] Marketing: APENAS tokens ainda locked (não os já unlocked que estão no balanceOf)
+        uint256 marketingAutoWeight = dgovToken.totalMarketingLocked();
         uint256 autoTotal = founderAutoWeight + marketingAutoWeight;
         
         // Usa o maior entre automático e manual (retrocompatibilidade)

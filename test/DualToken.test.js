@@ -1417,4 +1417,105 @@ describe("DecentraChat Dual-Token System v3.0", function () {
       ).to.be.revertedWith("No quorum");
     });
   });
+
+  // =========================================================================
+  // SEGUNDA AUDITORIA — TESTES ADICIONAIS
+  // =========================================================================
+
+  describe("Second Audit Fixes", function () {
+
+    it("SA-02: Should enforce MAX_BIDS_PER_AUCTION = 100", async function () {
+      const maxBids = await dgov.MAX_BIDS_PER_AUCTION();
+      expect(maxBids).to.equal(100n);
+    });
+
+    it("SA-05: Marketing locked weight should decrease after unlock", async function () {
+      // Transfer marketing tokens to user1 (creates lock)
+      const amount = ethers.parseEther("100000"); // 100k
+      await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
+
+      // Check totalMarketingLocked
+      const lockedBefore = await dgov.totalMarketingLocked();
+      expect(lockedBefore).to.equal(amount);
+
+      // Advance 360 days (180 lock + 180 vesting)
+      await time.increase(360 * 86400);
+
+      // Unlock lock index 0
+      await dgov.connect(user1).unlockMarketingVesting(0);
+
+      // totalMarketingLocked should be 0 now
+      const lockedAfter = await dgov.totalMarketingLocked();
+      expect(lockedAfter).to.equal(0n);
+
+      // totalMarketingDistributed should still be 100k
+      const distributed = await dgov.totalMarketingDistributed();
+      expect(distributed).to.equal(amount);
+    });
+
+    it("SA-07: setDividendPool should emit DividendPoolUpdated event", async function () {
+      const newPool = user4.address;
+      await expect(dgov.connect(founder).setDividendPool(newPool))
+        .to.emit(dgov, "DividendPoolUpdated")
+        .withArgs(await dividendPool.getAddress(), newPool);
+      // Restore
+      await dgov.connect(founder).setDividendPool(await dividendPool.getAddress());
+    });
+
+    it("SA-08: payActivationFee should require relayer approval", async function () {
+      // User1 has DCHAT but has NOT approved relayer
+      // First, reset relayer daily limit for user1 (it might be set from other tests)
+      // payActivationFee should fail without approval
+      await expect(
+        dchat.connect(relayer).payActivationFee(user4.address)
+      ).to.be.revertedWith("User has not approved relayer");
+    });
+
+    it("SA-08: payActivationFee should work with relayer approval", async function () {
+      // User4 approves relayer
+      await dchat.connect(user4).approveRelayerAllowance(ethers.parseEther("10"));
+
+      const balBefore = await dchat.balanceOf(user4.address);
+      await dchat.connect(relayer).payActivationFee(user4.address);
+      const balAfter = await dchat.balanceOf(user4.address);
+
+      const activationFee = await dchat.activationFee();
+      expect(balBefore - balAfter).to.equal(activationFee);
+    });
+
+    it("AUTO-03: DividendPool should have notifyAuctionDeposit function", async function () {
+      // Verify the function exists on the contract
+      expect(typeof dividendPool.notifyAuctionDeposit).to.equal("function");
+    });
+
+    it("AUTO-03: notifyAuctionDeposit should only be callable by DGovToken", async function () {
+      await expect(
+        dividendPool.connect(founder).notifyAuctionDeposit(ethers.parseEther("100"))
+      ).to.be.revertedWith("Only DGovToken");
+    });
+
+    it("SA-06: cancelProposal should work correctly for proposer before voting ends", async function () {
+      // Deploy governance
+      const DGovGovernance = await ethers.getContractFactory("DGovGovernance");
+      const governance = await DGovGovernance.deploy(await dgov.getAddress(), founder.address);
+      await governance.waitForDeployment();
+
+      // Register founder as voter
+      await governance.connect(founder).registerAsVoter();
+
+      // Create proposal
+      await governance.connect(founder).createProposal(
+        "Test Cancel", "Testing cancel flow", 0, "0x", ethers.ZeroAddress
+      );
+
+      // Proposer cancels before voting ends
+      await expect(governance.connect(founder).cancelProposal(1))
+        .to.emit(governance, "ProposalCancelled")
+        .withArgs(1, founder.address);
+
+      // Verify it's marked as executed (cannot be used again)
+      const [, , executed] = await governance.getProposalTiming(1);
+      expect(executed).to.be.true;
+    });
+  });
 });

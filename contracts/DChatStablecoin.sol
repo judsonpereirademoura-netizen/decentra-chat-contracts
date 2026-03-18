@@ -485,6 +485,18 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
 
     function payActivationFee(address user) external onlyRole(RELAYER_ROLE) whenNotPaused {
         require(balanceOf(user) >= activationFee, "Insufficient balance for activation");
+        // [SA-08] Verificar que o user aprovou o relayer e tem limite suficiente
+        require(relayerDailyLimit[user] > 0, "User has not approved relayer");
+        uint256 today = block.timestamp / 1 days;
+        if (relayerLastResetDay[user] != today) {
+            relayerDailySpent[user] = 0;
+            relayerLastResetDay[user] = today;
+        }
+        require(
+            relayerDailySpent[user] + activationFee <= relayerDailyLimit[user],
+            "Relayer daily limit exceeded for activation"
+        );
+        relayerDailySpent[user] += activationFee;
         _transfer(user, reserveWallet, activationFee);
         emit ActivationFeePaid(user, activationFee);
     }

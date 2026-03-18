@@ -390,7 +390,7 @@ contract DGovGovernance is ReentrancyGuard, Pausable {
         ProposalCore storage c = proposalCores[pid];
         require(c.proposer != address(0) && !c.executed, "Cannot cancel");
         require(
-            msg.sender == c.proposer && block.timestamp < c.endTime ||
+            (msg.sender == c.proposer && block.timestamp < c.endTime) ||
             msg.sender == admin,
             "Not authorized to cancel"
         );

@@ -952,8 +952,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DChatStablecoin.sol": {
-      "lastModificationDate": 1773843370758,
-      "contentHash": "f7edc896aa28522bb0abae4af3e04328",
+      "lastModificationDate": 1773845581711,
+      "contentHash": "ec6328b06a0ced927586ef41654e47d0",
       "sourceName": "contracts/DChatStablecoin.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -1145,8 +1145,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DividendPool.sol": {
-      "lastModificationDate": 1773844515797,
-      "contentHash": "f03b7d06750b9de57bb87ba51ad8cab7",
+      "lastModificationDate": 1773845539187,
+      "contentHash": "1ae9fb64602f2d6a14e2b5d920b141a4",
       "sourceName": "contracts/DividendPool.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -1187,8 +1187,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DGovToken.sol": {
-      "lastModificationDate": 1773844421988,
-      "contentHash": "fb326dda37448dd372f51a6e7a314a6f",
+      "lastModificationDate": 1773845472631,
+      "contentHash": "8687905d0a17390f04d7e36f9188da9e",
       "sourceName": "contracts/DGovToken.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -1225,7 +1225,8 @@
         "^0.8.24"
       ],
       "artifacts": [
-        "DGovToken"
+        "DGovToken",
+        "IDividendPool"
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/mocks/MockERC20.sol": {
@@ -1267,8 +1268,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DGovGovernance.sol": {
-      "lastModificationDate": 1773843457931,
-      "contentHash": "d94a039c32a157df36cc54ed3ab5e6b1",
+      "lastModificationDate": 1773845512199,
+      "contentHash": "2baf0b3c1b515ec719daf9625412a868",
       "sourceName": "contracts/DGovGovernance.sol",
       "solcConfig": {
         "version": "0.8.24",

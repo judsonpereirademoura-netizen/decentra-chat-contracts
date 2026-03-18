@@ -7,6 +7,11 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
 
+// [AUTO-03] Interface para notificar DividendPool automaticamente
+interface IDividendPool {
+    function notifyAuctionDeposit(uint256 amount) external;
+}
+
 /**
  * @title DGovToken ($DGOV) v3.0
  * @author DecentraChat Protocol
@@ -53,7 +58,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     uint256 public constant MIN_INCREMENT_BPS = 500;  // 5% incremento mínimo (basis points)
     uint256 public constant BPS_DENOMINATOR = 10000;
 
-    uint256 public constant MAX_BIDS_PER_AUCTION = 500;  // [F-01/F-02] Limite para evitar DoS por gas
+    uint256 public constant MAX_BIDS_PER_AUCTION = 100;  // [SA-02] Reduzido de 500→100 para evitar DoS por gas no sorting O(n²)
     uint256 public constant MAX_ANTI_SNIPE_EXTENSIONS = 6; // [F-03] Máximo 1h extra de extensão
 
     uint256 public constant VESTING_TRANCHES = 3;
@@ -180,6 +185,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     event DividendsSent(uint256 indexed auctionId, uint256 amount);
 
     event GovernanceContractSet(address indexed governanceContract);
+    event DividendPoolUpdated(address indexed oldPool, address indexed newPool); // [SA-07]
 
     // =========================================================================
     // CONSTRUCTOR
@@ -666,6 +672,8 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
                 IERC20(dchatToken).transfer(dividendPool, totalRevenueLocal),
                 "Dividend transfer failed"
             );
+            // [AUTO-03] Notificar DividendPool automaticamente para atualizar pointsPerToken
+            IDividendPool(dividendPool).notifyAuctionDeposit(totalRevenueLocal);
             emit DividendsSent(auctionId, totalRevenueLocal);
         }
 
@@ -913,7 +921,9 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
 
     function setDividendPool(address _pool) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(_pool != address(0), "Invalid address");
+        address oldPool = dividendPool;
         dividendPool = _pool;
+        emit DividendPoolUpdated(oldPool, _pool); // [SA-07]
     }
 
     /**
