@@ -13,7 +13,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  *
  *   ALOCAÇÃO DO SUPPLY (100M):
  *     - 30% Fundador (30M) — vesting 10M a cada 12 meses, recebe dividendos desde dia 1
- *     - 10% Marketing (10M) — vesting ~3.33M a cada 12 meses, controlado pelo fundador
+ *     - 10% Marketing (10M) — liberado ao fundador, lock 180 dias por transferência a prestadores
  *     - 60% Leilões (60M) — 156 leilões semanais fracionados, início T+90 dias
  *
  *   LEILÃO FRACIONADO (Modelo B):
@@ -55,9 +55,9 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     uint256 public constant VESTING_TRANCHES = 3;
     uint256 public constant VESTING_INTERVAL = 365 days;
     uint256 public constant FOUNDER_PER_TRANCHE = 10_000_000 * 1e18;
-    uint256 public constant MARKETING_PER_TRANCHE = 3_333_333 * 1e18;
-    // Last marketing tranche gets remainder: 10M - (3,333,333 * 2) = 3,333,334
-    uint256 public constant MARKETING_LAST_TRANCHE = MARKETING_ALLOCATION - (MARKETING_PER_TRANCHE * 2);
+
+    // Marketing: lock individual de 180 dias por transferência do fundador para prestador
+    uint256 public constant MARKETING_LOCK_PERIOD = 180 days;
 
     // Distribuição progressiva por fase (6 fases de 26 leilões cada)
     // Fase 1: 7%, Fase 2: 14%, Fase 3: 21.5%, Fase 4: 21.5%, Fase 5: 18%, Fase 6: 18%
@@ -81,7 +81,16 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     // =========================================================================
     uint256 public vestingStart;
     uint256 public founderTranchesClaimed;
-    uint256 public marketingTranchesClaimed;
+
+    // Marketing: tokens transferidos pelo fundador para prestadores com lock de 180 dias
+    struct MarketingLock {
+        uint256 amount;
+        uint256 unlockTime;  // timestamp quando desbloqueia
+        bool unlocked;
+    }
+    mapping(address => MarketingLock[]) public marketingLocks;
+    uint256 public totalMarketingDistributed;  // Total já distribuído pelo fundador
+    uint256 public totalMarketingLocked;       // Total atualmente locked em prestadores
 
     // =========================================================================
     // STATE — REGISTERED USERS (somente cadastrados podem participar de leilões)
@@ -166,6 +175,8 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     // EVENTS
     // =========================================================================
     event VestingClaimed(address indexed beneficiary, string vestingType, uint256 tranche, uint256 amount);
+    event MarketingTokensTransferred(address indexed recipient, uint256 amount, uint256 unlockTime, uint256 lockIndex);
+    event MarketingTokensUnlocked(address indexed recipient, uint256 lockIndex, uint256 amount);
     event UserRegistered(address indexed user);
     event UserUnregistered(address indexed user);
 
@@ -261,24 +272,103 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
     }
 
     // =========================================================================
-    // MARKETING VESTING (10M: ~3.33M every 12 months, controlled by founder)
+    // MARKETING DISTRIBUTION (10M: fundador transfere para prestadores com lock 180 dias)
     // =========================================================================
 
-    function claimMarketingVesting(address recipient) external nonReentrant {
+    /**
+     * @notice Fundador transfere tokens de marketing para um prestador de serviço.
+     *         Os tokens ficam locked na carteira do prestador por 180 dias.
+     * @param recipient Endereço do prestador de serviço
+     * @param amount Quantidade de $DGOV a transferir
+     */
+    function transferMarketingTokens(address recipient, uint256 amount) external nonReentrant {
         require(msg.sender == founder, "Only founder");
         require(recipient != address(0), "Invalid recipient");
-        require(marketingTranchesClaimed < VESTING_TRANCHES, "All tranches claimed");
+        require(amount > 0, "Amount must be > 0");
+        require(
+            totalMarketingDistributed + amount <= MARKETING_ALLOCATION,
+            "Exceeds marketing allocation"
+        );
 
-        uint256 nextTranche = marketingTranchesClaimed + 1;
-        uint256 unlockTime = vestingStart + (nextTranche * VESTING_INTERVAL);
-        require(block.timestamp >= unlockTime, "Tranche not yet unlocked");
+        totalMarketingDistributed += amount;
+        totalMarketingLocked += amount;
 
-        marketingTranchesClaimed = nextTranche;
-
-        uint256 amount = (nextTranche == VESTING_TRANCHES) ? MARKETING_LAST_TRANCHE : MARKETING_PER_TRANCHE;
+        // Transfer tokens from contract to recipient (locked)
         _transfer(address(this), recipient, amount);
 
-        emit VestingClaimed(recipient, "marketing", nextTranche, amount);
+        // Create lock entry
+        uint256 unlockTime = block.timestamp + MARKETING_LOCK_PERIOD;
+        uint256 lockIndex = marketingLocks[recipient].length;
+        marketingLocks[recipient].push(MarketingLock({
+            amount: amount,
+            unlockTime: unlockTime,
+            unlocked: false
+        }));
+
+        emit MarketingTokensTransferred(recipient, amount, unlockTime, lockIndex);
+    }
+
+    /**
+     * @notice Prestador desbloqueia tokens de marketing após 180 dias.
+     * @param lockIndex Índice do lock a desbloquear
+     */
+    function unlockMarketingTokens(uint256 lockIndex) external nonReentrant {
+        require(lockIndex < marketingLocks[msg.sender].length, "Invalid lock index");
+
+        MarketingLock storage lock = marketingLocks[msg.sender][lockIndex];
+        require(!lock.unlocked, "Already unlocked");
+        require(block.timestamp >= lock.unlockTime, "Lock period not expired");
+
+        lock.unlocked = true;
+        totalMarketingLocked -= lock.amount;
+
+        emit MarketingTokensUnlocked(msg.sender, lockIndex, lock.amount);
+    }
+
+    /**
+     * @notice Override de transfer para impedir transferência de tokens locked de marketing.
+     */
+    function _update(address from, address to, uint256 value) internal virtual override {
+        if (from != address(0) && from != address(this)) {
+            // Verificar se o remetente tem tokens de marketing locked
+            uint256 lockedAmount = getMarketingLockedBalance(from);
+            uint256 balance = balanceOf(from);
+            require(balance - lockedAmount >= value, "Cannot transfer locked marketing tokens");
+        }
+        super._update(from, to, value);
+    }
+
+    /**
+     * @notice Retorna o total de tokens de marketing ainda locked para um endereço.
+     */
+    function getMarketingLockedBalance(address holder) public view returns (uint256) {
+        uint256 locked = 0;
+        MarketingLock[] storage locks = marketingLocks[holder];
+        for (uint256 i = 0; i < locks.length; i++) {
+            if (!locks[i].unlocked) {
+                locked += locks[i].amount;
+            }
+        }
+        return locked;
+    }
+
+    /**
+     * @notice Retorna informações sobre os locks de marketing de um endereço.
+     */
+    function getMarketingLocks(address holder) external view returns (
+        uint256[] memory amounts,
+        uint256[] memory unlockTimes,
+        bool[] memory unlockedStatus
+    ) {
+        MarketingLock[] storage locks = marketingLocks[holder];
+        amounts = new uint256[](locks.length);
+        unlockTimes = new uint256[](locks.length);
+        unlockedStatus = new bool[](locks.length);
+        for (uint256 i = 0; i < locks.length; i++) {
+            amounts[i] = locks[i].amount;
+            unlockTimes[i] = locks[i].unlockTime;
+            unlockedStatus[i] = locks[i].unlocked;
+        }
     }
 
     // =========================================================================
@@ -299,22 +389,18 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         tranchesClaimed = founderTranchesClaimed;
     }
 
-    function getMarketingVestingStatus() external view returns (
+    function getMarketingDistributionStatus() external view returns (
         uint256 totalAllocated,
-        uint256 totalClaimed,
-        uint256 nextUnlockTime,
-        uint256 tranchesClaimed
+        uint256 totalDistributed,
+        uint256 totalLocked,
+        uint256 totalUnlocked,
+        uint256 remaining
     ) {
         totalAllocated = MARKETING_ALLOCATION;
-        uint256 claimed;
-        for (uint256 i = 1; i <= marketingTranchesClaimed; i++) {
-            claimed += (i == VESTING_TRANCHES) ? MARKETING_LAST_TRANCHE : MARKETING_PER_TRANCHE;
-        }
-        totalClaimed = claimed;
-        if (marketingTranchesClaimed < VESTING_TRANCHES) {
-            nextUnlockTime = vestingStart + ((marketingTranchesClaimed + 1) * VESTING_INTERVAL);
-        }
-        tranchesClaimed = marketingTranchesClaimed;
+        totalDistributed = totalMarketingDistributed;
+        totalLocked = totalMarketingLocked;
+        totalUnlocked = totalMarketingDistributed - totalMarketingLocked;
+        remaining = MARKETING_ALLOCATION - totalMarketingDistributed;
     }
 
     // =========================================================================
@@ -817,16 +903,12 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
         uint256 _currentAuction,
         uint256 _remainingAuctions,
         uint256 _founderClaimed,
-        uint256 _marketingClaimed,
+        uint256 _marketingDistributed,
         uint256 _proposalCount,
         uint256 _registeredUsers
     ) {
         uint256 locked = balanceOf(address(this));
         uint256 founderClaimed = founderTranchesClaimed * FOUNDER_PER_TRANCHE;
-        uint256 marketingClaimed;
-        for (uint256 i = 1; i <= marketingTranchesClaimed; i++) {
-            marketingClaimed += (i == VESTING_TRANCHES) ? MARKETING_LAST_TRANCHE : MARKETING_PER_TRANCHE;
-        }
         return (
             TOTAL_SUPPLY,
             totalSupply() - locked,
@@ -835,7 +917,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
             currentAuctionId,
             TOTAL_AUCTIONS - currentAuctionId,
             founderClaimed,
-            marketingClaimed,
+            totalMarketingDistributed,
             proposalCount,
             totalRegisteredUsers
         );
@@ -874,10 +956,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard {
 
     function _getVestingTokensRemaining() internal view returns (uint256) {
         uint256 founderRemaining = FOUNDER_ALLOCATION - (founderTranchesClaimed * FOUNDER_PER_TRANCHE);
-        uint256 marketingRemaining = MARKETING_ALLOCATION;
-        for (uint256 i = 1; i <= marketingTranchesClaimed; i++) {
-            marketingRemaining -= (i == VESTING_TRANCHES) ? MARKETING_LAST_TRANCHE : MARKETING_PER_TRANCHE;
-        }
+        uint256 marketingRemaining = MARKETING_ALLOCATION - totalMarketingDistributed;
         return founderRemaining + marketingRemaining;
     }
 }

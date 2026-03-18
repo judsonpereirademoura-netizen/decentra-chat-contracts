@@ -313,45 +313,137 @@ describe("DecentraChat Dual-Token System v3.0", function () {
     });
 
     // =========================================================================
-    // MARKETING VESTING (10M: ~3.33M every 12 months)
+    // MARKETING DISTRIBUTION (10M: lock 180 dias por transferência)
     // =========================================================================
-    describe("Marketing Vesting", function () {
-      it("Should allow founder to claim marketing tokens to any address", async function () {
-        await time.increase(ONE_YEAR);
-        await dgov.connect(founder).claimMarketingVesting(user1.address);
-        expect(await dgov.balanceOf(user1.address)).to.equal(ethers.parseEther("3333333"));
+    describe("Marketing Distribution (180-day lock)", function () {
+      const ONE_HUNDRED_EIGHTY_DAYS = 180 * ONE_DAY;
+
+      it("Should allow founder to transfer marketing tokens to a recipient with 180-day lock", async function () {
+        const amount = ethers.parseEther("1000000"); // 1M
+        await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
+
+        // Tokens are in user1's balance but locked
+        expect(await dgov.balanceOf(user1.address)).to.equal(amount);
+        expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(amount);
       });
 
-      it("Should distribute all 10M across 3 tranches", async function () {
-        const recipients = [user1.address, user2.address, user3.address];
-        let totalDistributed = 0n;
+      it("Should prevent recipient from transferring locked marketing tokens", async function () {
+        const amount = ethers.parseEther("1000000");
+        await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
 
-        for (let i = 0; i < 3; i++) {
-          await time.increase(ONE_YEAR);
-          await dgov.connect(founder).claimMarketingVesting(recipients[i]);
-          totalDistributed += await dgov.balanceOf(recipients[i]);
-        }
-
-        expect(totalDistributed).to.equal(MARKETING_ALLOC);
-      });
-
-      it("Should give last tranche the remainder (3,333,334)", async function () {
-        await time.increase(ONE_YEAR);
-        await dgov.connect(founder).claimMarketingVesting(user1.address);
-        await time.increase(ONE_YEAR);
-        await dgov.connect(founder).claimMarketingVesting(user2.address);
-        await time.increase(ONE_YEAR);
-        await dgov.connect(founder).claimMarketingVesting(user3.address);
-
-        // Last tranche = 10M - 3,333,333 * 2 = 3,333,334
-        expect(await dgov.balanceOf(user3.address)).to.equal(ethers.parseEther("3333334"));
-      });
-
-      it("Should only allow founder to claim marketing", async function () {
-        await time.increase(ONE_YEAR);
+        // user1 tries to transfer locked tokens — should fail
         await expect(
-          dgov.connect(user1).claimMarketingVesting(user1.address)
+          dgov.connect(user1).transfer(user2.address, amount)
+        ).to.be.revertedWith("Cannot transfer locked marketing tokens");
+      });
+
+      it("Should allow recipient to unlock tokens after 180 days", async function () {
+        const amount = ethers.parseEther("2000000"); // 2M
+        await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
+
+        // Cannot unlock before 180 days
+        await expect(
+          dgov.connect(user1).unlockMarketingTokens(0)
+        ).to.be.revertedWith("Lock period not expired");
+
+        // Advance 180 days
+        await time.increase(ONE_HUNDRED_EIGHTY_DAYS);
+
+        // Now unlock
+        await dgov.connect(user1).unlockMarketingTokens(0);
+        expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(0);
+
+        // Now user1 can transfer freely
+        await dgov.connect(user1).transfer(user2.address, ethers.parseEther("500000"));
+        expect(await dgov.balanceOf(user2.address)).to.equal(ethers.parseEther("500000"));
+      });
+
+      it("Should handle multiple locks to same recipient with different unlock times", async function () {
+        const amount1 = ethers.parseEther("1000000");
+        const amount2 = ethers.parseEther("2000000");
+
+        await dgov.connect(founder).transferMarketingTokens(user1.address, amount1);
+        await time.increase(30 * ONE_DAY); // 30 days later
+        await dgov.connect(founder).transferMarketingTokens(user1.address, amount2);
+
+        // Both locked
+        expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(amount1 + amount2);
+
+        // Advance to unlock first lock (180 days from first transfer)
+        await time.increase(150 * ONE_DAY); // 150 more days (total 180 from first)
+
+        await dgov.connect(user1).unlockMarketingTokens(0);
+        expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(amount2);
+
+        // Can transfer up to amount1 (unlocked)
+        await dgov.connect(user1).transfer(user2.address, amount1);
+        expect(await dgov.balanceOf(user2.address)).to.equal(amount1);
+
+        // Cannot transfer more (amount2 still locked)
+        await expect(
+          dgov.connect(user1).transfer(user2.address, ethers.parseEther("1"))
+        ).to.be.revertedWith("Cannot transfer locked marketing tokens");
+
+        // Advance 30 more days to unlock second lock
+        await time.increase(30 * ONE_DAY);
+        await dgov.connect(user1).unlockMarketingTokens(1);
+        expect(await dgov.getMarketingLockedBalance(user1.address)).to.equal(0);
+      });
+
+      it("Should distribute full 10M across multiple recipients", async function () {
+        await dgov.connect(founder).transferMarketingTokens(user1.address, ethers.parseEther("3000000"));
+        await dgov.connect(founder).transferMarketingTokens(user2.address, ethers.parseEther("3000000"));
+        await dgov.connect(founder).transferMarketingTokens(user3.address, ethers.parseEther("4000000"));
+
+        const status = await dgov.getMarketingDistributionStatus();
+        expect(status.totalAllocated).to.equal(MARKETING_ALLOC);
+        expect(status.totalDistributed).to.equal(MARKETING_ALLOC);
+        expect(status.remaining).to.equal(0);
+
+        // Cannot distribute more
+        await expect(
+          dgov.connect(founder).transferMarketingTokens(user4.address, ethers.parseEther("1"))
+        ).to.be.revertedWith("Exceeds marketing allocation");
+      });
+
+      it("Should only allow founder to transfer marketing tokens", async function () {
+        await expect(
+          dgov.connect(user1).transferMarketingTokens(user2.address, ethers.parseEther("1000"))
         ).to.be.revertedWith("Only founder");
+      });
+
+      it("Should return correct lock info via getMarketingLocks", async function () {
+        await dgov.connect(founder).transferMarketingTokens(user1.address, ethers.parseEther("1000000"));
+        await dgov.connect(founder).transferMarketingTokens(user1.address, ethers.parseEther("500000"));
+
+        const locks = await dgov.getMarketingLocks(user1.address);
+        expect(locks.amounts.length).to.equal(2);
+        expect(locks.amounts[0]).to.equal(ethers.parseEther("1000000"));
+        expect(locks.amounts[1]).to.equal(ethers.parseEther("500000"));
+        expect(locks.unlockedStatus[0]).to.be.false;
+        expect(locks.unlockedStatus[1]).to.be.false;
+      });
+
+      it("Should track totalMarketingLocked correctly after unlocks", async function () {
+        const amount = ethers.parseEther("5000000");
+        await dgov.connect(founder).transferMarketingTokens(user1.address, amount);
+
+        expect(await dgov.totalMarketingLocked()).to.equal(amount);
+
+        await time.increase(ONE_HUNDRED_EIGHTY_DAYS);
+        await dgov.connect(user1).unlockMarketingTokens(0);
+
+        expect(await dgov.totalMarketingLocked()).to.equal(0);
+      });
+
+      it("Should prevent double unlock", async function () {
+        await dgov.connect(founder).transferMarketingTokens(user1.address, ethers.parseEther("1000000"));
+        await time.increase(ONE_HUNDRED_EIGHTY_DAYS);
+        await dgov.connect(user1).unlockMarketingTokens(0);
+
+        await expect(
+          dgov.connect(user1).unlockMarketingTokens(0)
+        ).to.be.revertedWith("Already unlocked");
       });
     });
 

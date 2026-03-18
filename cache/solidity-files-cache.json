@@ -1184,8 +1184,8 @@
       ]
     },
     "/home/ubuntu/decentra-chat-contracts/contracts/DGovToken.sol": {
-      "lastModificationDate": 1773804795589,
-      "contentHash": "e9236701559d6a623a4bda294bb0b2f2",
+      "lastModificationDate": 1773825399151,
+      "contentHash": "eaac61b9d28d5c635fdd5b3bea20c22d",
       "sourceName": "contracts/DGovToken.sol",
       "solcConfig": {
         "version": "0.8.24",
