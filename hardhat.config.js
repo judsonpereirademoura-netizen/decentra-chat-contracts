@@ -26,9 +26,10 @@ module.exports = {
     // Polygon Mainnet — para deploy em produção
     // Para usar: export PRIVATE_KEY="sua_private_key" && npx hardhat run scripts/deploy.js --network polygonMainnet
     polygonMainnet: {
-      url: process.env.POLYGON_MAINNET_RPC || "https://polygon-rpc.com/",
+      url: process.env.POLYGON_MAINNET_RPC || "https://polygon-bor-rpc.publicnode.com",
       chainId: 137,
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      timeout: 120000,
     },
   },
   etherscan: {
