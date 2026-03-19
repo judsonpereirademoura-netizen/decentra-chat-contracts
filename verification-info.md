@@ -1,0 +1,30 @@
+# DescentraChat Contract Verification Info
+
+## Compiler Settings
+- Solidity: 0.8.24
+- Optimizer: enabled, 200 runs
+- EVM Version: default (shanghai)
+- License: MIT
+
+## Deployer/Founder Address
+- 0x5a37daD4eE116380BF4008A94E5b433ae32406F6
+
+## Collateral (Polygon Mainnet)
+- USDC: 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359
+- USDT: 0xc2132D05D31c914a87C6611C10748AEb04B58e8F
+
+## 1. DChatStablecoin (0xECC263f838B99f21432898200fb2d34D103253Eb)
+Constructor args: (founderAddress, deployer, reserveWallet, usdcAddress, usdtAddress)
+= (0x5a37daD4eE116380BF4008A94E5b433ae32406F6, 0x5a37daD4eE116380BF4008A94E5b433ae32406F6, 0x5a37daD4eE116380BF4008A94E5b433ae32406F6, 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359, 0xc2132D05D31c914a87C6611C10748AEb04B58e8F)
+
+## 2. DividendPool (0xC9aCAf89231ADdEF53087F7670E4b22Ff1FB573B)
+Constructor args: (dchatAddress, deployer, founderAddress)
+= (0xECC263f838B99f21432898200fb2d34D103253Eb, 0x5a37daD4eE116380BF4008A94E5b433ae32406F6, 0x5a37daD4eE116380BF4008A94E5b433ae32406F6)
+
+## 3. DGovToken (0x99Af6047482554dfC150De94582fBAA52a00596A)
+Constructor args: (founderAddress, dchatAddress, dividendPoolAddress)
+= (0x5a37daD4eE116380BF4008A94E5b433ae32406F6, 0xECC263f838B99f21432898200fb2d34D103253Eb, 0xC9aCAf89231ADdEF53087F7670E4b22Ff1FB573B)
+
+## 4. DGovGovernance (0x1A38ee6C8Cf505d6404aF6CF7843513B4B99d9E1)
+Constructor args: (dgovAddress, founderAddress)
+= (0x99Af6047482554dfC150De94582fBAA52a00596A, 0x5a37daD4eE116380BF4008A94E5b433ae32406F6)
