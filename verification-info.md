@@ -1,4 +1,4 @@
-# DescentraChat Contract Verification Info
+# DecentraChat Contract Verification Info
 
 ## Compiler Settings
 - Solidity: 0.8.24
