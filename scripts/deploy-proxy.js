@@ -164,7 +164,7 @@ async function main() {
     const DividendPool = await ethers.getContractFactory("DividendPool");
     const { proxyAddress } = await deployProxy(
       DividendPool,
-      [dchatProxyAddress, deployer.address, founderAddress],
+      [dchatProxyAddress, founderAddress],
       "DividendPool"
     );
     dividendPoolProxyAddress = proxyAddress;
@@ -236,6 +236,12 @@ async function main() {
     const tx3 = await dividendPool.grantRole(DEPOSITOR_ROLE, dgovProxyAddress);
     await tx3.wait();
     console.log("   [OK] DEPOSITOR_ROLE granted to DGovToken");
+
+    // 6c2. [FIX-4.1] Set DGovToken address on DividendPool (was not available at Stage 3)
+    console.log("   -> Setting DGovToken on DividendPool...");
+    const tx3b = await dividendPool.setDGovToken(dgovProxyAddress);
+    await tx3b.wait();
+    console.log("   [OK] DividendPool.dgovToken updated");
 
     // 6d. Set dividendPool on DGovToken
     console.log("   -> Setting dividendPool on DGovToken...");

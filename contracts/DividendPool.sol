@@ -90,6 +90,7 @@ contract DividendPool is Initializable, AccessControlUpgradeable, ReentrancyGuar
     event DividendsClaimed(address indexed holder, uint256 amount, uint256 timestamp);
     event DividendsUpdated(address indexed holder, uint256 newPending);
     event VestingWeightSet(address indexed holder, uint256 oldWeight, uint256 newWeight);
+    event DGovTokenSet(address indexed dgovToken);
 
     // =========================================================================
     // CONSTRUCTOR / INITIALIZER
@@ -100,9 +101,8 @@ contract DividendPool is Initializable, AccessControlUpgradeable, ReentrancyGuar
         _disableInitializers();
     }
 
-    function initialize(address _dchatToken, address _dgovToken, address _admin) initializer public {
+    function initialize(address _dchatToken, address _admin) initializer public {
         require(_dchatToken != address(0), "Invalid DCHAT");
-        require(_dgovToken != address(0), "Invalid DGOV");
         require(_admin != address(0), "Invalid admin");
 
         __AccessControl_init();
@@ -111,12 +111,24 @@ contract DividendPool is Initializable, AccessControlUpgradeable, ReentrancyGuar
         __UUPSUpgradeable_init();
 
         dchatToken = IERC20(_dchatToken);
-        dgovToken = IDGovTokenForDividend(_dgovToken);
-        dgovTokenAddress = _dgovToken; // [F-15]
         deployedAt = block.timestamp; // [F-18]
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(DEPOSITOR_ROLE, _admin); // [F-16] Admin can deposit initially
+    }
+
+    /**
+     * @notice Set the DGovToken contract address. Can only be called once by admin.
+     * @dev [FIX-4.1] DGovToken is deployed after DividendPool, so we need a setter
+     *      to configure it post-deploy in Stage 6.
+     * @param _dgovToken Address of the DGovToken proxy contract
+     */
+    function setDGovToken(address _dgovToken) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(_dgovToken != address(0), "Invalid DGOV");
+        require(dgovTokenAddress == address(0), "DGovToken already set");
+        dgovToken = IDGovTokenForDividend(_dgovToken);
+        dgovTokenAddress = _dgovToken;
+        emit DGovTokenSet(_dgovToken);
     }
 
     // =========================================================================
@@ -140,7 +152,7 @@ contract DividendPool is Initializable, AccessControlUpgradeable, ReentrancyGuar
     /**
      * @notice Deposit $DCHAT dividends from auction revenue (100% of auction proceeds).
      */
-    function depositAuctionRevenue(uint256 amount) external onlyRole(DEPOSITOR_ROLE) { // [F-16]
+    function depositAuctionRevenue(uint256 amount) external onlyRole(DEPOSITOR_ROLE) whenNotPaused { // [F-16] [FIX-4.4]
         _depositInternal(amount, "auction");
         totalFromAuctions += amount;
     }

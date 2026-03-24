@@ -565,6 +565,7 @@ contract DChatStablecoin is
     function addCollateralToken(address token, uint8 decimals) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(token != address(0), "Invalid token");
         require(!acceptedCollateral[token], "Already accepted");
+        require(decimals <= 18, "Decimals too high"); // [FIX] Prevent underflow in decimal conversion
         acceptedCollateral[token] = true;
         collateralTokens.push(token);
         collateralDecimals[token] = decimals;
