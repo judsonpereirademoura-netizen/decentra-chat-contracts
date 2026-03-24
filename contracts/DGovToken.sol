@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 // [AUTO-03] Interface para notificar DividendPool automaticamente
 interface IDividendPool {
@@ -13,30 +16,27 @@ interface IDividendPool {
 }
 
 /**
- * @title DGovToken ($DGOV) v3.0
+ * @title DGovToken ($DGOV) v6.0
  * @author DecentraChat Protocol
  * @notice Token de governança e propriedade do ecossistema DecentraChat.
+ *         UUPS Proxy Upgradeable.
  *
  *   ALOCAÇÃO DO SUPPLY (100M):
  *     - 30% Fundador (30M) — vesting 10M a cada 12 meses, recebe dividendos desde dia 1
  *     - 10% Marketing (10M) — liberado ao fundador, lock 180 dias por transferência a prestadores
  *     - 60% Leilões (60M) — 156 leilões semanais fracionados, início T+90 dias
  *
- *   LEILÃO FRACIONADO (Modelo B):
- *     - Múltiplos compradores por leilão (quantidade + preço por unidade)
- *     - Anti-sniping: extensão de 10 min se lance nos últimos 10 min
- *     - Incremento mínimo: 5% acima do preço mais alto por unidade
- *     - Período de aquecimento: 2h no início (lances aceitos, sem finalização)
- *     - Distribuição progressiva de tokens por fase
- *     - Lance mínimo: 0.01 $DCHAT por 1 $DGOV
- *     - Escrow Pool obrigatório (depósito prévio)
- *     - Sobras queimadas permanentemente
- *     - $DCHAT arrecadados → 100% para DividendPool (holders de $DGOV)
- *     - Somente usuários cadastrados (registeredUsers) podem participar
- *
- *   GOVERNANÇA: 100% on-chain, 1 $DGOV = 1 voto
+ *   Audit v3 fixes: C-03, H-03, M-06
  */
-contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
+contract DGovToken is
+    Initializable,
+    ERC20Upgradeable,
+    AccessControlUpgradeable,
+    ReentrancyGuardUpgradeable,
+    PausableUpgradeable,
+    UUPSUpgradeable
+{
+    using SafeERC20 for IERC20;
 
     // =========================================================================
     // CONSTANTS
@@ -49,29 +49,25 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     uint256 public constant TOTAL_AUCTIONS = 156;
     uint256 public constant AUCTION_DURATION = 24 hours;
     uint256 public constant AUCTION_INTERVAL = 7 days;
-    uint256 public constant AUCTION_DELAY = 90 days; // Primeiro leilão em T+90 dias
-    uint256 public constant WARMUP_PERIOD = 2 hours;  // Período de aquecimento
+    uint256 public constant AUCTION_DELAY = 90 days;
+    uint256 public constant WARMUP_PERIOD = 2 hours;
     uint256 public constant ANTI_SNIPE_WINDOW = 10 minutes;
     uint256 public constant ANTI_SNIPE_EXTENSION = 10 minutes;
 
     uint256 public constant MIN_BID_PER_DGOV = 1e16; // 0.01 $DCHAT por $DGOV
-    uint256 public constant MIN_INCREMENT_BPS = 500;  // 5% incremento mínimo (basis points)
+    uint256 public constant MIN_INCREMENT_BPS = 500;  // 5% incremento mínimo
     uint256 public constant BPS_DENOMINATOR = 10000;
 
-    uint256 public constant MAX_BIDS_PER_AUCTION = 100;  // [SA-02] Reduzido de 500→100 para evitar DoS por gas no sorting O(n²)
-    uint256 public constant MAX_ANTI_SNIPE_EXTENSIONS = 6; // [F-03] Máximo 1h extra de extensão
+    uint256 public constant MAX_BIDS_PER_AUCTION = 50;  // [C-03] Reduzido de 100→50 para evitar DoS por gas no sorting O(n²)
+    uint256 public constant MAX_ANTI_SNIPE_EXTENSIONS = 6; // [F-03] Máximo 1h extra
 
     uint256 public constant VESTING_TRANCHES = 3;
     uint256 public constant VESTING_INTERVAL = 365 days;
     uint256 public constant FOUNDER_PER_TRANCHE = 10_000_000 * 1e18;
 
-    // Marketing: 180 dias de lock total + 180 dias de liberação linear gradual
     uint256 public constant MARKETING_LOCK_PERIOD = 180 days;
     uint256 public constant MARKETING_VESTING_PERIOD = 180 days;
 
-    // Distribuição progressiva por fase (6 fases de 26 leilões cada)
-    // Fase 1: 7%, Fase 2: 14%, Fase 3: 21.5%, Fase 4: 21.5%, Fase 5: 18%, Fase 6: 18%
-    uint256[6] public PHASE_PERCENTAGES = [700, 1400, 2150, 2150, 1800, 1800];
     uint256 public constant AUCTIONS_PER_PHASE = 26;
 
     // =========================================================================
@@ -84,7 +80,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     // =========================================================================
     address public founder;
     address public dchatToken;
-    address public dividendPool; // Recebe 100% dos $DCHAT dos leilões
+    address public dividendPool;
 
     // =========================================================================
     // STATE — VESTING
@@ -92,21 +88,19 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     uint256 public vestingStart;
     uint256 public founderTranchesClaimed;
 
-    // Marketing: tokens transferidos pelo fundador para prestadores
-    // 180 dias de lock total + 180 dias de liberação linear gradual
     struct MarketingLock {
-        uint256 amount;        // Total de tokens no lock
-        uint256 lockEnd;       // Fim do lock total (180 dias após transferência)
-        uint256 vestingEnd;    // Fim do vesting linear (360 dias após transferência)
-        uint256 claimed;       // Tokens já liberados/claimed do vesting
+        uint256 amount;
+        uint256 lockEnd;
+        uint256 vestingEnd;
+        uint256 claimed;
     }
     mapping(address => MarketingLock[]) public marketingLocks;
-    mapping(address => uint256) public marketingLockedCache; // [F-04] Cache de locked por endereço
-    uint256 public totalMarketingDistributed;  // Total já distribuído pelo fundador
-    uint256 public totalMarketingLocked;       // Total atualmente locked em prestadores
+    mapping(address => uint256) public marketingLockedCache;
+    uint256 public totalMarketingDistributed;
+    uint256 public totalMarketingLocked;
 
     // =========================================================================
-    // STATE — REGISTERED USERS (somente cadastrados podem participar de leilões)
+    // STATE — REGISTERED USERS
     // =========================================================================
     mapping(address => bool) public registeredUsers;
     uint256 public totalRegisteredUsers;
@@ -116,7 +110,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     // =========================================================================
     struct EscrowBalance {
         uint256 total;
-        uint256 locked; // Soma de todos os lances ativos
+        uint256 locked;
     }
 
     mapping(address => EscrowBalance) public escrowBalances;
@@ -127,12 +121,12 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     // =========================================================================
     struct Bid {
         address bidder;
-        uint256 quantity;     // Quantidade de $DGOV desejada
-        uint256 pricePerUnit; // Preço por unidade em $DCHAT (18 decimals)
-        uint256 totalCost;    // quantity * pricePerUnit / 1e18
-        bool filled;          // Se foi preenchido (total ou parcial)
-        uint256 filledQty;    // Quantidade efetivamente preenchida
-        bool refunded;        // Se o excedente foi devolvido
+        uint256 quantity;
+        uint256 pricePerUnit;
+        uint256 totalCost;
+        bool filled;
+        uint256 filledQty;
+        bool refunded;
     }
 
     struct Auction {
@@ -140,28 +134,31 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         uint256 tokensAvailable;
         uint256 startTime;
         uint256 endTime;
-        uint256 highestPricePerUnit; // Maior preço por unidade (para incremento mínimo)
+        uint256 highestPricePerUnit;
         uint256 totalBidCount;
-        uint256 totalBidVolume;      // Soma de todas as quantidades pedidas
+        uint256 totalBidVolume;
         bool finalized;
         bool tokensBurned;
-        uint256 totalRevenue;        // Total $DCHAT arrecadado neste leilão
-        uint256 tokensSold;          // Total $DGOV vendidos
-        uint256 tokensBurnedAmount;  // Total $DGOV queimados
-        uint256 antiSnipeCount;      // [F-03] Contador de extensões anti-sniping
+        uint256 totalRevenue;
+        uint256 tokensSold;
+        uint256 tokensBurnedAmount;
+        uint256 antiSnipeCount;
     }
 
     mapping(uint256 => Auction) public auctions;
-    mapping(uint256 => Bid[]) public auctionBids; // auctionId => array de bids
-    mapping(uint256 => mapping(address => uint256[])) public userBidIndices; // auctionId => user => bid indices
+    mapping(uint256 => Bid[]) public auctionBids;
+    mapping(uint256 => mapping(address => uint256[])) public userBidIndices;
 
     uint256 public currentAuctionId;
     uint256 public auctionsStartTime;
     uint256 public totalTokensBurned;
     uint256 public totalAuctionRevenue;
 
-    // Governance is handled by a separate DGovGovernance contract
     address public governanceContract;
+
+    // Distribuição progressiva por fase
+    // Fase 1: 7%, Fase 2: 14%, Fase 3: 21.5%, Fase 4: 21.5%, Fase 5: 18%, Fase 6: 18%
+    uint256[6] private _phasePercentages;
 
     // =========================================================================
     // EVENTS
@@ -185,29 +182,49 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     event DividendsSent(uint256 indexed auctionId, uint256 amount);
 
     event GovernanceContractSet(address indexed governanceContract);
-    event DividendPoolUpdated(address indexed oldPool, address indexed newPool); // [SA-07]
+    event DividendPoolUpdated(address indexed oldPool, address indexed newPool);
 
     // =========================================================================
-    // CONSTRUCTOR
+    // CONSTRUCTOR & INITIALIZER
     // =========================================================================
-    constructor(
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(
         address _founder,
         address _dchatToken,
         address _dividendPool
-    ) ERC20("DecentraChat Governance", "DGOV") {
+    ) initializer public {
         require(_founder != address(0), "Invalid founder");
         require(_dchatToken != address(0), "Invalid DCHAT token");
         require(_dividendPool != address(0), "Invalid dividend pool");
+
+        __ERC20_init("DecentraChat Governance", "DGOV");
+        __AccessControl_init();
+        __ReentrancyGuard_init();
+        __Pausable_init();
+        __UUPSUpgradeable_init();
 
         founder = _founder;
         dchatToken = _dchatToken;
         dividendPool = _dividendPool;
         vestingStart = block.timestamp;
 
+        // Initialize phase percentages
+        _phasePercentages[0] = 700;
+        _phasePercentages[1] = 1400;
+        _phasePercentages[2] = 2150;
+        _phasePercentages[3] = 2150;
+        _phasePercentages[4] = 1800;
+        _phasePercentages[5] = 1800;
+
         _grantRole(DEFAULT_ADMIN_ROLE, _founder);
         _grantRole(AUCTION_MANAGER_ROLE, _founder);
 
-        // Mint total supply to this contract (held until vesting/auction/marketing release)
+        // Mint total supply to this contract
         _mint(address(this), TOTAL_SUPPLY);
 
         // Register founder as user
@@ -216,7 +233,13 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     }
 
     // =========================================================================
-    // USER REGISTRATION (required to participate in auctions)
+    // UUPS UPGRADE AUTHORIZATION
+    // =========================================================================
+
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+
+    // =========================================================================
+    // USER REGISTRATION
     // =========================================================================
 
     function registerUser(address user) external onlyRole(AUCTION_MANAGER_ROLE) {
@@ -228,7 +251,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     }
 
     function registerUserBatch(address[] calldata users) external onlyRole(AUCTION_MANAGER_ROLE) {
-        require(users.length <= 200, "Batch too large"); // [F-06]
+        require(users.length <= 200, "Batch too large");
         for (uint256 i = 0; i < users.length; i++) {
             if (users[i] != address(0) && !registeredUsers[users[i]]) {
                 registeredUsers[users[i]] = true;
@@ -264,15 +287,9 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     }
 
     // =========================================================================
-    // MARKETING DISTRIBUTION (10M: fundador transfere para prestadores com lock 180 dias)
+    // MARKETING DISTRIBUTION
     // =========================================================================
 
-    /**
-     * @notice Fundador transfere tokens de marketing para um prestador de serviço.
-     *         Os tokens ficam locked na carteira do prestador por 180 dias.
-     * @param recipient Endereço do prestador de serviço
-     * @param amount Quantidade de $DGOV a transferir
-     */
     function transferMarketingTokens(address recipient, uint256 amount) external nonReentrant whenNotPaused {
         require(msg.sender == founder, "Only founder");
         require(recipient != address(0), "Invalid recipient");
@@ -285,10 +302,8 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         totalMarketingDistributed += amount;
         totalMarketingLocked += amount;
 
-        // Transfer tokens from contract to recipient (locked)
         _transfer(address(this), recipient, amount);
 
-        // Create lock entry: 180d lock + 180d linear vesting
         uint256 lockEnd = block.timestamp + MARKETING_LOCK_PERIOD;
         uint256 vestingEnd = lockEnd + MARKETING_VESTING_PERIOD;
         uint256 lockIndex = marketingLocks[recipient].length;
@@ -299,18 +314,12 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
             claimed: 0
         }));
 
-        // [F-04] Atualizar cache
         marketingLockedCache[recipient] += amount;
 
         emit MarketingTokensTransferred(recipient, amount, lockEnd, lockIndex);
     }
 
-    /**
-     * @notice Prestador faz claim dos tokens liberados pelo vesting linear.
-     *         Após 180 dias de lock, inicia liberação linear por mais 180 dias.
-     * @param lockIndex Índice do lock a fazer claim
-     */
-    function unlockMarketingVesting(uint256 lockIndex) external nonReentrant { // [F-05] Renamed for clarity
+    function unlockMarketingVesting(uint256 lockIndex) external nonReentrant {
         require(lockIndex < marketingLocks[msg.sender].length, "Invalid lock index");
 
         MarketingLock storage lock = marketingLocks[msg.sender][lockIndex];
@@ -323,7 +332,6 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         lock.claimed += claimable;
         totalMarketingLocked -= claimable;
 
-        // [F-04] Atualizar cache
         if (marketingLockedCache[msg.sender] >= claimable) {
             marketingLockedCache[msg.sender] -= claimable;
         } else {
@@ -333,14 +341,9 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         emit MarketingTokensUnlocked(msg.sender, lockIndex, claimable);
     }
 
-    /**
-     * @notice Calcula a quantidade total já vested (liberada) de um lock.
-     */
     function _getVestedAmount(MarketingLock storage lock) internal view returns (uint256) {
         if (block.timestamp < lock.lockEnd) return 0;
         if (block.timestamp >= lock.vestingEnd) return lock.amount;
-
-        // Linear vesting: proporcional ao tempo decorrido no período de vesting
         uint256 elapsed = block.timestamp - lock.lockEnd;
         return (lock.amount * elapsed) / MARKETING_VESTING_PERIOD;
     }
@@ -350,10 +353,8 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
      */
     function _update(address from, address to, uint256 value) internal virtual override {
         if (from != address(0) && from != address(this)) {
-            // [F-04] Usa cache para evitar iteração O(n) em cada transfer
             uint256 lockedAmount = marketingLockedCache[from];
             if (lockedAmount > 0) {
-                // Recalcular cache se necessário (vesting pode ter liberado tokens)
                 lockedAmount = getMarketingLockedBalance(from);
                 marketingLockedCache[from] = lockedAmount;
             }
@@ -363,9 +364,6 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         super._update(from, to, value);
     }
 
-    /**
-     * @notice Retorna o total de tokens de marketing ainda locked para um endereço.
-     */
     function getMarketingLockedBalance(address holder) public view returns (uint256) {
         uint256 locked = 0;
         MarketingLock[] storage locks = marketingLocks[holder];
@@ -377,9 +375,6 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         return locked;
     }
 
-    /**
-     * @notice Retorna quanto um prestador pode fazer claim agora.
-     */
     function getMarketingClaimable(address holder) public view returns (uint256) {
         uint256 claimable = 0;
         MarketingLock[] storage locks = marketingLocks[holder];
@@ -392,9 +387,6 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         return claimable;
     }
 
-    /**
-     * @notice Retorna informações sobre os locks de marketing de um endereço.
-     */
     function getMarketingLocks(address holder) external view returns (
         uint256[] memory amounts,
         uint256[] memory lockEnds,
@@ -458,10 +450,8 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     function depositToEscrow(uint256 amount) external nonReentrant whenNotPaused {
         require(registeredUsers[msg.sender], "Not a registered user");
         require(amount > 0, "Amount must be > 0");
-        require(
-            IERC20(dchatToken).transferFrom(msg.sender, address(this), amount),
-            "DCHAT transfer failed"
-        );
+        // [M-06] SafeERC20
+        IERC20(dchatToken).safeTransferFrom(msg.sender, address(this), amount);
 
         escrowBalances[msg.sender].total += amount;
         totalEscrowBalance += amount;
@@ -479,10 +469,8 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         bal.total -= amount;
         totalEscrowBalance -= amount;
 
-        require(
-            IERC20(dchatToken).transfer(msg.sender, amount),
-            "DCHAT transfer failed"
-        );
+        // [M-06] SafeERC20
+        IERC20(dchatToken).safeTransfer(msg.sender, amount);
 
         emit EscrowWithdrawn(msg.sender, amount, bal.total);
     }
@@ -499,31 +487,20 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     }
 
     // =========================================================================
-    // AUCTION SYSTEM — Fractional (Model B) with Progressive Distribution
+    // AUCTION SYSTEM
     // =========================================================================
 
     function initializeAuctions() external onlyRole(AUCTION_MANAGER_ROLE) {
         require(auctionsStartTime == 0, "Already initialized");
-        // Primeiro leilão em T+90 dias
         auctionsStartTime = block.timestamp + AUCTION_DELAY;
         currentAuctionId = 0;
     }
 
-    /**
-     * @notice Calcula tokens disponíveis para um leilão baseado na distribuição progressiva.
-     * @param auctionNumber Número do leilão (1-156)
-     */
     function getTokensForAuction(uint256 auctionNumber) public view returns (uint256) {
         require(auctionNumber >= 1 && auctionNumber <= TOTAL_AUCTIONS, "Invalid auction number");
-
-        // Determina a fase (0-5) baseado no número do leilão
         uint256 phaseIndex = (auctionNumber - 1) / AUCTIONS_PER_PHASE;
         if (phaseIndex > 5) phaseIndex = 5;
-
-        // Tokens totais para esta fase
-        uint256 phaseTokens = (AUCTION_ALLOCATION * PHASE_PERCENTAGES[phaseIndex]) / BPS_DENOMINATOR;
-
-        // Tokens por leilão nesta fase
+        uint256 phaseTokens = (AUCTION_ALLOCATION * _phasePercentages[phaseIndex]) / BPS_DENOMINATOR;
         return phaseTokens / AUCTIONS_PER_PHASE;
     }
 
@@ -562,11 +539,6 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         emit AuctionStarted(nextId, tokensForThisAuction, block.timestamp, block.timestamp + AUCTION_DURATION);
     }
 
-    /**
-     * @notice Dar um lance fracionado no leilão ativo.
-     * @param quantity Quantidade de $DGOV desejada
-     * @param pricePerUnit Preço por unidade em $DCHAT (18 decimals)
-     */
     function placeBid(uint256 quantity, uint256 pricePerUnit) external nonReentrant whenNotPaused {
         require(registeredUsers[msg.sender], "Not a registered user");
 
@@ -577,39 +549,31 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         require(block.timestamp >= auction.startTime, "Auction not started");
         require(block.timestamp < auction.endTime, "Auction ended");
         require(!auction.finalized, "Auction finalized");
-        require(auctionBids[auctionId].length < MAX_BIDS_PER_AUCTION, "Max bids reached for this auction"); // [F-01/F-02]
+        require(auctionBids[auctionId].length < MAX_BIDS_PER_AUCTION, "Max bids reached for this auction");
         require(quantity > 0, "Quantity must be > 0");
         require(pricePerUnit > 0, "Price must be > 0");
 
-        // Enforce minimum price: 0.01 $DCHAT per $DGOV
         require(pricePerUnit >= MIN_BID_PER_DGOV, "Price below minimum (0.01 DCHAT/DGOV)");
 
-        // [F-07] Enforce 5% increment: se o bid quer superar o highest price atual,
-        // deve ser pelo menos 5% maior. Bids abaixo ou iguais ao highest são permitidos
-        // (serão preenchidos normalmente do maior ao menor na finalização).
+        // [F-07] 5% increment enforcement
         if (auction.highestPricePerUnit > 0 && pricePerUnit > auction.highestPricePerUnit) {
-            uint256 minIncrement = (auction.highestPricePerUnit * 105) / 100; // 5% acima
+            uint256 minIncrement = (auction.highestPricePerUnit * 105) / 100;
             require(pricePerUnit >= minIncrement, "New highest bid must be >= 5% above current highest");
         }
 
-        // Calculate total cost
         uint256 totalCost = (quantity * pricePerUnit) / 1e18;
         require(totalCost > 0, "Total cost must be > 0");
 
-        // Check escrow balance
         EscrowBalance storage bal = escrowBalances[msg.sender];
         uint256 available = bal.total - bal.locked;
         require(available >= totalCost, "Insufficient unlocked escrow balance");
 
-        // Lock the $DCHAT in escrow
         bal.locked += totalCost;
 
-        // Update highest price if applicable
         if (pricePerUnit > auction.highestPricePerUnit) {
             auction.highestPricePerUnit = pricePerUnit;
         }
 
-        // Store the bid
         uint256 bidIndex = auctionBids[auctionId].length;
         auctionBids[auctionId].push(Bid({
             bidder: msg.sender,
@@ -626,7 +590,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         auction.totalBidCount++;
         auction.totalBidVolume += quantity;
 
-        // Anti-sniping: extend auction if bid in last 10 minutes [F-03: limited extensions]
+        // Anti-sniping
         if (auction.endTime - block.timestamp <= ANTI_SNIPE_WINDOW
             && auction.antiSnipeCount < MAX_ANTI_SNIPE_EXTENSIONS) {
             auction.endTime += ANTI_SNIPE_EXTENSION;
@@ -637,11 +601,6 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         emit BidPlaced(auctionId, msg.sender, quantity, pricePerUnit, totalCost, bidIndex);
     }
 
-    /**
-     * @notice Finalizar um leilão — ordena bids do maior preço ao menor,
-     *         preenche até esgotar o lote, devolve excedentes, queima sobras,
-     *         envia 100% da receita ao DividendPool.
-     */
     function finalizeAuction(uint256 auctionId) external nonReentrant whenNotPaused {
         Auction storage auction = auctions[auctionId];
 
@@ -668,11 +627,9 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         }
 
         if (totalRevenueLocal > 0) {
-            require(
-                IERC20(dchatToken).transfer(dividendPool, totalRevenueLocal),
-                "Dividend transfer failed"
-            );
-            // [AUTO-03] Notificar DividendPool automaticamente para atualizar pointsPerToken
+            // [M-06] SafeERC20
+            IERC20(dchatToken).safeTransfer(dividendPool, totalRevenueLocal);
+            // [AUTO-03] Notificar DividendPool
             IDividendPool(dividendPool).notifyAuctionDeposit(totalRevenueLocal);
             emit DividendsSent(auctionId, totalRevenueLocal);
         }
@@ -690,6 +647,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         for (uint256 i = 0; i < bids.length; i++) {
             sortedIndices[i] = i;
         }
+        // Insertion sort — safe with MAX_BIDS_PER_AUCTION = 50 [C-03]
         for (uint256 i = 1; i < sortedIndices.length; i++) {
             uint256 key = sortedIndices[i];
             uint256 j = i;
@@ -727,6 +685,10 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
                 emit BidRefunded(auctionId, bid.bidder, sortedIndices[i], bid.totalCost - fillCost);
             }
 
+            // [H-03] Proteção contra underflow
+            if (fillCost > bidderBal.total) {
+                fillCost = bidderBal.total;
+            }
             bidderBal.total -= fillCost;
             totalEscrowBalance -= fillCost;
             remainingTokens -= fillQty;
@@ -838,7 +800,7 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     }
 
     // =========================================================================
-    // [F-14] CIRCUIT BREAKER — PAUSE/UNPAUSE
+    // [F-14] CIRCUIT BREAKER
     // =========================================================================
 
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -850,20 +812,13 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
     }
 
     // =========================================================================
-    // TOKEN QUERY HELPERS (used by DGovGovernance contract)
+    // TOKEN QUERY HELPERS
     // =========================================================================
 
-    /**
-     * @notice Total de $DGOV emitidos (não queimados). Base para quorum e threshold.
-     */
     function getTotalEmitted() public view returns (uint256) {
         return TOTAL_SUPPLY - totalTokensBurned;
     }
 
-    /**
-     * @notice Retorna o peso de vesting de um holder (tokens locked que contam para voto).
-     *         Founder: tokens não-claimed do vesting. Marketing: tokens locked.
-     */
     function getVestingWeight(address holder) external view returns (uint256) {
         if (holder == founder) {
             uint256 claimed = founderTranchesClaimed * FOUNDER_PER_TRANCHE;
@@ -923,27 +878,14 @@ contract DGovToken is ERC20, AccessControl, ReentrancyGuard, Pausable {
         require(_pool != address(0), "Invalid address");
         address oldPool = dividendPool;
         dividendPool = _pool;
-        emit DividendPoolUpdated(oldPool, _pool); // [SA-07]
+        emit DividendPoolUpdated(oldPool, _pool);
     }
 
-    /**
-     * @notice Founder dividend eligibility: founder's 30M $DGOV count for dividends
-     *         even while locked (vesting). This is tracked off-chain by the DividendPool
-     *         contract which reads balanceOf(founder) + remaining vesting allocation.
-     */
     function getFounderDividendWeight() external view returns (uint256) {
-        // Founder's total weight = already claimed + still vesting (all 30M from day 1)
         return FOUNDER_ALLOCATION;
     }
 
-    /**
-     * @notice Get total $DGOV that should count for dividend distribution.
-     *         Includes: all emitted tokens + founder's full 30M + marketing's full 10M
-     *         (even if still vesting, they earn dividends from day 1)
-     */
     function getTotalDividendWeight() external view returns (uint256) {
-        // All tokens that have been sold in auctions + founder 30M + marketing 10M
-        // = totalSupply - burned - remaining auction tokens in contract
         uint256 auctionTokensRemaining = balanceOf(address(this)) - _getVestingTokensRemaining();
         return TOTAL_SUPPLY - totalTokensBurned - auctionTokensRemaining;
     }
