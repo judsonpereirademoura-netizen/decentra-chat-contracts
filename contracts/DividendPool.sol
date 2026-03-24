@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol"; // [F-14]
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 /**
  * @dev Interface para consultar o endereço do contrato DGovToken [F-15]
@@ -39,7 +42,8 @@ interface IDGovTokenForDividend {
  *     - Marketing: 10M de peso desde dia 1 (mesmo antes do unlock)
  *     - Compradores de leilão: peso = saldo na carteira
  */
-contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
+contract DividendPool is Initializable, AccessControlUpgradeable, ReentrancyGuardUpgradeable, PausableUpgradeable, UUPSUpgradeable {
+    using SafeERC20 for IERC20;
 
     // =========================================================================
     // ROLES [F-16]
@@ -67,19 +71,10 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
     mapping(address => uint256) public totalClaimedByUser;   // Historical claims
 
     // =========================================================================
-    // VESTING WEIGHT — Tokens em vesting contam para dividendos
-    // =========================================================================
-    // O founder e marketing recebem dividendos sobre seus 30M e 10M respectivamente,
-    // mesmo antes do unlock. O admin registra esses pesos fixos.
-    mapping(address => uint256) public vestingWeight;
-    uint256 public totalVestingWeight;
-
-    // =========================================================================
     // TOTAL DIVIDEND WEIGHT
     // =========================================================================
-    // totalDividendWeight = totalSupply($DGOV) + totalVestingWeight
-    // (tokens em vesting estão no contrato DGovToken, não na carteira dos beneficiários,
-    //  então precisamos somar o vestingWeight separadamente)
+    // totalDividendWeight = circulatingSupply($DGOV) + founderAutoWeight + marketingAutoWeight
+    // Vesting weight is now calculated automatically via DGovToken.getVestingWeight()
 
     // =========================================================================
     // REVENUE SOURCES TRACKING
@@ -95,69 +90,52 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
     event DividendsClaimed(address indexed holder, uint256 amount, uint256 timestamp);
     event DividendsUpdated(address indexed holder, uint256 newPending);
     event VestingWeightSet(address indexed holder, uint256 oldWeight, uint256 newWeight);
+    event DGovTokenSet(address indexed dgovToken);
 
     // =========================================================================
-    // CONSTRUCTOR
+    // CONSTRUCTOR / INITIALIZER
     // =========================================================================
-    constructor(
-        address _dchatToken,
-        address _dgovToken,
-        address _admin
-    ) {
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address _dchatToken, address _admin) initializer public {
         require(_dchatToken != address(0), "Invalid DCHAT");
-        require(_dgovToken != address(0), "Invalid DGOV");
         require(_admin != address(0), "Invalid admin");
 
+        __AccessControl_init();
+        __ReentrancyGuard_init();
+        __Pausable_init();
+        __UUPSUpgradeable_init();
+
         dchatToken = IERC20(_dchatToken);
-        dgovToken = IDGovTokenForDividend(_dgovToken);
-        dgovTokenAddress = _dgovToken; // [F-15]
         deployedAt = block.timestamp; // [F-18]
 
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(DEPOSITOR_ROLE, _admin); // [F-16] Admin can deposit initially
     }
 
-    // =========================================================================
-    // VESTING WEIGHT MANAGEMENT
-    // =========================================================================
-
     /**
-     * @notice Set vesting weight for an address (founder/marketing).
-     * @dev [SA-12] DEPRECATED: Com F-17, o vesting weight é calculado automaticamente
-     *      via DGovToken.getVestingWeight(). Esta função é mantida apenas como
-     *      fallback de emergência. O sistema usa max(auto, manual) para segurança.
-     *      Tokens em vesting contam para dividendos desde dia 1.
+     * @notice Set the DGovToken contract address. Can only be called once by admin.
+     * @dev [FIX-4.1] DGovToken is deployed after DividendPool, so we need a setter
+     *      to configure it post-deploy in Stage 6.
+     * @param _dgovToken Address of the DGovToken proxy contract
      */
-    function setVestingWeight(address holder, uint256 weight) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(holder != address(0), "Invalid holder");
-
-        // Update dividends before changing weight
-        _updateDividends(holder);
-
-        uint256 oldWeight = vestingWeight[holder];
-        totalVestingWeight = totalVestingWeight - oldWeight + weight;
-        vestingWeight[holder] = weight;
-
-        emit VestingWeightSet(holder, oldWeight, weight);
+    function setDGovToken(address _dgovToken) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(_dgovToken != address(0), "Invalid DGOV");
+        require(dgovTokenAddress == address(0), "DGovToken already set");
+        dgovToken = IDGovTokenForDividend(_dgovToken);
+        dgovTokenAddress = _dgovToken;
+        emit DGovTokenSet(_dgovToken);
     }
 
-    /**
-     * @notice Reduce vesting weight when tokens are unlocked (claimed from vesting).
-     * @dev [SA-12] DEPRECATED: Com F-17, o vesting weight é atualizado automaticamente.
-     *      Mantida como fallback de emergência.
-     */
-    function reduceVestingWeight(address holder, uint256 reduction) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(holder != address(0), "Invalid holder");
-        require(reduction <= vestingWeight[holder], "Reduction exceeds weight");
+    // =========================================================================
+    // UUPS UPGRADE AUTHORIZATION
+    // =========================================================================
 
-        _updateDividends(holder);
-
-        uint256 oldWeight = vestingWeight[holder];
-        vestingWeight[holder] -= reduction;
-        totalVestingWeight -= reduction;
-
-        emit VestingWeightSet(holder, oldWeight, vestingWeight[holder]);
-    }
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     // =========================================================================
     // DEPOSIT DIVIDENDS
@@ -174,7 +152,7 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
     /**
      * @notice Deposit $DCHAT dividends from auction revenue (100% of auction proceeds).
      */
-    function depositAuctionRevenue(uint256 amount) external onlyRole(DEPOSITOR_ROLE) { // [F-16]
+    function depositAuctionRevenue(uint256 amount) external onlyRole(DEPOSITOR_ROLE) whenNotPaused { // [F-16] [FIX-4.4]
         _depositInternal(amount, "auction");
         totalFromAuctions += amount;
     }
@@ -204,10 +182,7 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
         require(amount > 0, "Amount must be > 0");
 
         // Transfer $DCHAT from sender to this contract
-        require(
-            dchatToken.transferFrom(msg.sender, address(this), amount),
-            "Transfer failed"
-        );
+        dchatToken.safeTransferFrom(msg.sender, address(this), amount);
 
         uint256 totalWeight = _getTotalDividendWeight();
         if (totalWeight > 0) {
@@ -236,10 +211,7 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
         totalDividendsClaimed += amount;
         totalClaimedByUser[msg.sender] += amount;
 
-        require(
-            dchatToken.transfer(msg.sender, amount),
-            "Transfer failed"
-        );
+        dchatToken.safeTransfer(msg.sender, amount);
 
         emit DividendsClaimed(msg.sender, amount, block.timestamp);
     }
@@ -265,18 +237,13 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
      * @dev Weight = balanceOf($DGOV) + vestingWeight
      */
     /**
-     * @dev [F-17] Agora consulta automaticamente o DGovToken.getVestingWeight()
-     *      ao invés de depender de vestingWeight manual.
-     *      Fallback: se o DGovToken retornar 0 mas houver vestingWeight manual, usa o manual.
+     * @dev [F-17] Consulta automaticamente o DGovToken.getVestingWeight()
+     *      para calcular o peso de dividendo do holder.
      */
     function getHolderWeight(address holder) public view returns (uint256) {
         uint256 balance = dgovToken.balanceOf(holder);
-        // [F-17] Consulta automática do vesting weight do DGovToken
         uint256 autoWeight = dgovToken.getVestingWeight(holder);
-        uint256 manualWeight = vestingWeight[holder];
-        // Usa o maior entre automático e manual (para retrocompatibilidade)
-        uint256 effectiveWeight = autoWeight > manualWeight ? autoWeight : manualWeight;
-        return balance + effectiveWeight;
+        return balance + autoWeight;
     }
 
     /**
@@ -284,22 +251,18 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
      */
     function _getTotalDividendWeight() internal view returns (uint256) {
         // [F-15] Descontar tokens inativos no contrato DGovToken
-        // [F-17] Agora calcula vesting weight automático:
+        // [F-17] Calcula vesting weight automático:
         //   - Founder: FOUNDER_ALLOCATION - tokens já claimed (via getVestingWeight)
-        //   - Marketing: totalMarketingDistributed (tokens locked com prestadores)
-        // Fórmula: circulatingSupply + max(autoVestingTotal, manualTotalVestingWeight)
+        //   - Marketing: totalMarketingLocked (tokens locked com prestadores)
+        // Fórmula: circulatingSupply + founderAutoWeight + marketingAutoWeight
         uint256 circulatingSupply = dgovToken.totalSupply() - dgovToken.balanceOf(dgovTokenAddress);
-        
+
         // Calcular vesting weight automático total
         // Founder vesting weight
         uint256 founderAutoWeight = dgovToken.getVestingWeight(dgovToken.founder());
         // [SA-05] Marketing: APENAS tokens ainda locked (não os já unlocked que estão no balanceOf)
         uint256 marketingAutoWeight = dgovToken.totalMarketingLocked();
-        uint256 autoTotal = founderAutoWeight + marketingAutoWeight;
-        
-        // Usa o maior entre automático e manual (retrocompatibilidade)
-        uint256 effectiveTotalVesting = autoTotal > totalVestingWeight ? autoTotal : totalVestingWeight;
-        return circulatingSupply + effectiveTotalVesting;
+        return circulatingSupply + founderAutoWeight + marketingAutoWeight;
     }
 
     function getTotalDividendWeight() external view returns (uint256) {
@@ -354,7 +317,7 @@ contract DividendPool is AccessControl, ReentrancyGuard, Pausable {
     ) {
         holderWeight = getHolderWeight(holder);
         dgovBalance = dgovToken.balanceOf(holder);
-        vWeight = vestingWeight[holder];
+        vWeight = dgovToken.getVestingWeight(holder);
 
         // Calculate pending
         uint256 newPoints = pointsPerToken - lastPointsPerToken[holder];

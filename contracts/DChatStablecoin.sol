@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol"; // [F-14]
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 /**
  * @title DChatStablecoin ($DCHAT)
@@ -24,7 +27,16 @@ import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
  *   - Gas: Account Abstraction (ERC-4337) — gas pago em $DCHAT, invisível ao usuário
  *   - Settlement: Individual em tempo real (transparência máxima)
  */
-contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard, Pausable {
+contract DChatStablecoin is
+    Initializable,
+    ERC20Upgradeable,
+    ERC20BurnableUpgradeable,
+    AccessControlUpgradeable,
+    ReentrancyGuardUpgradeable,
+    PausableUpgradeable,
+    UUPSUpgradeable
+{
+    using SafeERC20 for IERC20;
 
     // =========================================================================
     // ROLES
@@ -50,6 +62,9 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     mapping(address => uint256) public vaultBalance;
     uint256 public totalVaultBalance; // Total USD value in vault
 
+    // [C-02] Dynamic decimal tracking per collateral token
+    mapping(address => uint8) public collateralDecimals;
+
     // =========================================================================
     // REDEEM MINIMUM
     // =========================================================================
@@ -67,17 +82,17 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     // =========================================================================
     // COST PER BYTE (in wei of $DCHAT, 18 decimals)
     // =========================================================================
-    uint256 public costPerByte = 1e9;  // 0.000000001 $DCHAT per byte (base)
+    uint256 public costPerByte;  // 0.000000001 $DCHAT per byte (base)
     uint256 public constant MAX_COST_PER_BYTE = 1e15;  // Safety cap
 
     // =========================================================================
     // DATA TYPE MULTIPLIERS (basis points, 10000 = 1.0x)
     // =========================================================================
-    uint16 public textMultiplier = 10000;    // 1.0x
-    uint16 public imageMultiplier = 15000;   // 1.5x
-    uint16 public videoMultiplier = 20000;   // 2.0x
-    uint16 public audioMultiplier = 15000;   // 1.5x
-    uint16 public fileMultiplier = 12000;    // 1.2x
+    uint16 public textMultiplier;    // 1.0x
+    uint16 public imageMultiplier;   // 1.5x
+    uint16 public videoMultiplier;   // 2.0x
+    uint16 public audioMultiplier;   // 1.5x
+    uint16 public fileMultiplier;    // 1.2x
 
     // =========================================================================
     // ADDRESSES
@@ -119,7 +134,7 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     // =========================================================================
     // ACTIVATION FEE
     // =========================================================================
-    uint256 public activationFee = 1e17;  // 0.1 $DCHAT ($0.10)
+    uint256 public activationFee;  // 0.1 $DCHAT ($0.10)
 
     // =========================================================================
     // STATISTICS
@@ -167,17 +182,33 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     event CostPerByteUpdated(uint256 oldCost, uint256 newCost);
     event ActivationFeePaid(address indexed user, uint256 amount);
     event MultiplierUpdated(uint8 dataType, uint16 oldMultiplier, uint16 newMultiplier);
+    event ActivationFeeUpdated(uint256 oldFee, uint256 newFee); // [L-04]
 
     // =========================================================================
-    // CONSTRUCTOR
+    // CONSTRUCTOR & INITIALIZER (UUPS Upgradeable)
     // =========================================================================
-    constructor(
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(
         address _founder,
         address _dividendPool,
         address _reserveWallet,
         address _usdc,
-        address _usdt
-    ) ERC20("DecentraChat Stablecoin", "DCHAT") {
+        uint8 _usdcDecimals,
+        address _usdt,
+        uint8 _usdtDecimals
+    ) initializer public {
+        __ERC20_init("DecentraChat Stablecoin", "DCHAT");
+        __ERC20Burnable_init();
+        __AccessControl_init();
+        __ReentrancyGuard_init();
+        __Pausable_init();
+        __UUPSUpgradeable_init();
+
         require(_founder != address(0), "Invalid founder");
         require(_dividendPool != address(0), "Invalid dividend pool");
         require(_reserveWallet != address(0), "Invalid reserve wallet");
@@ -186,6 +217,15 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
         dividendPool = _dividendPool;
         reserveWallet = _reserveWallet;
 
+        // Initialize state variables
+        costPerByte = 1e9;
+        textMultiplier = 10000;    // 1.0x
+        imageMultiplier = 15000;   // 1.5x
+        videoMultiplier = 20000;   // 2.0x
+        audioMultiplier = 15000;   // 1.5x
+        fileMultiplier = 12000;    // 1.2x
+        activationFee = 1e17;      // 0.1 $DCHAT ($0.10)
+
         _grantRole(DEFAULT_ADMIN_ROLE, _founder);
         _grantRole(MINTER_ROLE, _founder);
 
@@ -193,14 +233,22 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
         if (_usdc != address(0)) {
             acceptedCollateral[_usdc] = true;
             collateralTokens.push(_usdc);
+            collateralDecimals[_usdc] = _usdcDecimals;
             emit CollateralTokenAdded(_usdc);
         }
         if (_usdt != address(0)) {
             acceptedCollateral[_usdt] = true;
             collateralTokens.push(_usdt);
+            collateralDecimals[_usdt] = _usdtDecimals;
             emit CollateralTokenAdded(_usdt);
         }
     }
+
+    // =========================================================================
+    // UUPS UPGRADE AUTHORIZATION
+    // =========================================================================
+
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     // =========================================================================
     // VAULT — MINT (Deposit Collateral → Receive $DCHAT 1:1)
@@ -221,26 +269,22 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
         require(acceptedCollateral[collateralToken], "Token not accepted as collateral");
         require(collateralAmount > 0, "Amount must be > 0");
 
-        // USDC/USDT have 6 decimals, $DCHAT has 18 decimals
-        // 1 USDC (1e6) = 1 $DCHAT (1e18)
-        uint256 dchatAmount = collateralAmount * 1e12; // Scale 6 → 18 decimals
+        // [M-02] Fee-on-transfer protection: balance-before/after pattern
+        uint256 balBefore = IERC20(collateralToken).balanceOf(address(this));
+        IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), collateralAmount);
+        uint256 received = IERC20(collateralToken).balanceOf(address(this)) - balBefore;
 
-        // Transfer collateral from user to Vault (this contract)
-        bool success = IERC20(collateralToken).transferFrom(
-            msg.sender,
-            address(this),
-            collateralAmount
-        );
-        require(success, "Collateral transfer failed");
+        // [C-02] Dynamic decimal conversion
+        uint256 dchatAmount = received * 10**(18 - collateralDecimals[collateralToken]);
 
-        // Update vault tracking
-        vaultBalance[collateralToken] += collateralAmount;
-        totalVaultBalance += collateralAmount;
+        // Update vault tracking (use received amount)
+        vaultBalance[collateralToken] += received;
+        totalVaultBalance += received;
 
         // Mint $DCHAT 1:1 to user
         _mint(msg.sender, dchatAmount);
 
-        emit Minted(msg.sender, collateralToken, collateralAmount, dchatAmount, block.timestamp);
+        emit Minted(msg.sender, collateralToken, received, dchatAmount, block.timestamp);
     }
 
     /**
@@ -265,7 +309,7 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     /**
      * @notice Redeem $DCHAT for USDC or USDT at 1:1 ratio.
      * @dev Burns $DCHAT and releases collateral from Vault.
-     *      Minimum redeem: 20 $DCHAT.
+     *      Minimum redeem: 5 $DCHAT.
      *      User chooses which collateral token to receive.
      * @param collateralToken Address of USDC or USDT to receive
      * @param dchatAmount Amount of $DCHAT to redeem (18 decimals)
@@ -273,13 +317,13 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     function redeem(
         address collateralToken,
         uint256 dchatAmount
-    ) external nonReentrant {
+    ) external nonReentrant whenNotPaused {
         require(acceptedCollateral[collateralToken], "Token not accepted");
         require(dchatAmount >= MIN_REDEEM, "Minimum redeem is 5 DCHAT");
         require(balanceOf(msg.sender) >= dchatAmount, "Insufficient DCHAT balance");
 
-        // Convert $DCHAT (18 decimals) back to collateral (6 decimals)
-        uint256 collateralAmount = dchatAmount / 1e12;
+        // [C-02] Dynamic decimal conversion
+        uint256 collateralAmount = dchatAmount / 10**(18 - collateralDecimals[collateralToken]);
         require(collateralAmount > 0, "Amount too small after conversion");
 
         // Check vault has enough collateral
@@ -295,9 +339,8 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
         vaultBalance[collateralToken] -= collateralAmount;
         totalVaultBalance -= collateralAmount;
 
-        // Release collateral to user
-        bool success = IERC20(collateralToken).transfer(msg.sender, collateralAmount);
-        require(success, "Collateral transfer failed");
+        // [M-06] Release collateral to user using SafeERC20
+        IERC20(collateralToken).safeTransfer(msg.sender, collateralAmount);
 
         emit Redeemed(msg.sender, collateralToken, dchatAmount, collateralAmount, block.timestamp);
     }
@@ -340,6 +383,8 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
         uint8 dataType
     ) external onlyRole(RELAYER_ROLE) nonReentrant whenNotPaused {
         require(sender != address(0), "Invalid sender");
+        require(recipient != address(0), "Invalid recipient");
+        require(sender != recipient, "Cannot message yourself"); // [H-02]
         require(byteSize > 0, "Empty message");
         require(dataType <= 4, "Invalid data type");
 
@@ -517,11 +562,13 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
     // ADMIN FUNCTIONS
     // =========================================================================
 
-    function addCollateralToken(address token) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function addCollateralToken(address token, uint8 decimals) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(token != address(0), "Invalid token");
         require(!acceptedCollateral[token], "Already accepted");
+        require(decimals <= 18, "Decimals too high"); // [FIX] Prevent underflow in decimal conversion
         acceptedCollateral[token] = true;
         collateralTokens.push(token);
+        collateralDecimals[token] = decimals;
         emit CollateralTokenAdded(token);
     }
 
@@ -561,7 +608,9 @@ contract DChatStablecoin is ERC20, ERC20Burnable, AccessControl, ReentrancyGuard
 
     function setActivationFee(uint256 _newFee) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(_newFee <= 1e18, "Fee too high");
+        uint256 oldFee = activationFee;
         activationFee = _newFee;
+        emit ActivationFeeUpdated(oldFee, _newFee); // [L-04]
     }
 
     function setDividendPool(address _newPool) external onlyRole(DEFAULT_ADMIN_ROLE) {

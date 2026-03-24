@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol"; // [F-14]
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol"; // [F-14]
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 /**
  * @title DGovGovernance — Advanced Governance for DecentraChat
@@ -23,7 +25,7 @@ interface IDGovToken {
     function founder() external view returns (address);
 }
 
-contract DGovGovernance is ReentrancyGuard, Pausable {
+contract DGovGovernance is Initializable, ReentrancyGuardUpgradeable, PausableUpgradeable, UUPSUpgradeable {
 
     // =========================================================================
     // CONSTANTS
@@ -42,7 +44,7 @@ contract DGovGovernance is ReentrancyGuard, Pausable {
     // STATE — Core
     // =========================================================================
 
-    IDGovToken public immutable dgov;
+    IDGovToken public dgov;
     address public admin;
     address public pendingAdmin; // [F-22] Admin transfer com aceitação
     uint256 public adminTransferTimestamp; // [F-22] Timestamp do pedido de transferência
@@ -62,6 +64,7 @@ contract DGovGovernance is ReentrancyGuard, Pausable {
         uint256 snapshotTotalEmitted;
         uint8 proposalType;
         bool executed;
+        bool cancelled;
     }
 
     struct ProposalVotes {
@@ -126,14 +129,28 @@ contract DGovGovernance is ReentrancyGuard, Pausable {
     event ProposalCancelled(uint256 indexed proposalId, address indexed cancelledBy);
 
     // =========================================================================
-    // CONSTRUCTOR
+    // CONSTRUCTOR & INITIALIZER
     // =========================================================================
 
-    constructor(address _dgov, address _admin) {
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address _dgov, address _admin) initializer public {
         require(_dgov != address(0) && _admin != address(0), "Invalid address");
+        __ReentrancyGuard_init();
+        __Pausable_init();
+        __UUPSUpgradeable_init();
         dgov = IDGovToken(_dgov);
         admin = _admin;
     }
+
+    // =========================================================================
+    // UUPS UPGRADE AUTHORIZATION
+    // =========================================================================
+
+    function _authorizeUpgrade(address newImplementation) internal override onlyAdmin {}
 
     // =========================================================================
     // ADMIN MANAGEMENT [F-22]
@@ -286,7 +303,7 @@ contract DGovGovernance is ReentrancyGuard, Pausable {
 
         proposalCores[pid] = ProposalCore(
             msg.sender, block.timestamp, block.timestamp + PROPOSAL_DURATION,
-            0, snap, proposalType, false
+            0, snap, proposalType, false, false
         );
         proposalTitles[pid] = title;
         proposalDescriptions[pid] = description;
@@ -357,7 +374,7 @@ contract DGovGovernance is ReentrancyGuard, Pausable {
 
     function queueProposal(uint256 pid) external {
         ProposalCore storage c = proposalCores[pid];
-        require(c.proposer != address(0) && !c.executed && c.timelockEnd == 0, "Cannot queue");
+        require(c.proposer != address(0) && !c.executed && !c.cancelled && c.timelockEnd == 0, "Cannot queue");
         require(block.timestamp >= c.endTime, "Voting not ended");
 
         ProposalVotes storage pv = proposalVotes[pid];
@@ -371,7 +388,7 @@ contract DGovGovernance is ReentrancyGuard, Pausable {
 
     function executeProposal(uint256 pid) external nonReentrant whenNotPaused {
         ProposalCore storage c = proposalCores[pid];
-        require(!c.executed && c.timelockEnd > 0, "Cannot execute");
+        require(!c.executed && !c.cancelled && c.timelockEnd > 0, "Cannot execute");
         require(block.timestamp >= c.timelockEnd, "Timelock active");
         require(block.timestamp <= c.timelockEnd + EXECUTION_DEADLINE, "Execution deadline expired"); // [F-23]
 
@@ -388,13 +405,13 @@ contract DGovGovernance is ReentrancyGuard, Pausable {
     // [F-24] Cancel proposal — by proposer (before voting ends) or by admin (emergency)
     function cancelProposal(uint256 pid) external {
         ProposalCore storage c = proposalCores[pid];
-        require(c.proposer != address(0) && !c.executed, "Cannot cancel");
+        require(c.proposer != address(0) && !c.executed && !c.cancelled, "Cannot cancel");
         require(
             (msg.sender == c.proposer && block.timestamp < c.endTime) ||
             msg.sender == admin,
             "Not authorized to cancel"
         );
-        c.executed = true; // Mark as executed to prevent further actions
+        c.cancelled = true; // Mark as cancelled to prevent further actions
         emit ProposalCancelled(pid, msg.sender);
     }
 
@@ -464,12 +481,16 @@ contract DGovGovernance is ReentrancyGuard, Pausable {
 
     function isProposalActive(uint256 pid) external view returns (bool) {
         ProposalCore storage c = proposalCores[pid];
-        return (block.timestamp >= c.startTime && block.timestamp < c.endTime && !c.executed);
+        return (block.timestamp >= c.startTime && block.timestamp < c.endTime && !c.executed && !c.cancelled);
     }
 
     function isProposalExecutable(uint256 pid) external view returns (bool) {
         ProposalCore storage c = proposalCores[pid];
-        return (c.timelockEnd > 0 && block.timestamp >= c.timelockEnd && !c.executed);
+        return (c.timelockEnd > 0
+            && block.timestamp >= c.timelockEnd
+            && block.timestamp <= c.timelockEnd + EXECUTION_DEADLINE
+            && !c.executed
+            && !c.cancelled);
     }
 
     function hasVoted(uint256 pid, address voter) external view returns (bool) {
