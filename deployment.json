@@ -1,28 +1,44 @@
 {
-  "version": "5.2",
+  "version": "6.0",
   "network": "polygonMainnet",
   "chainId": 137,
   "deployer": "0x5a37daD4eE116380BF4008A94E5b433ae32406F6",
-  "timestamp": "2026-03-19T20:06:17.859Z",
+  "timestamp": "2026-03-24T01:20:00.000Z",
+  "proxyType": "UUPS (ERC-1967)",
   "contracts": {
     "DChatStablecoin": {
-      "address": "0xECC263f838B99f21432898200fb2d34D103253Eb",
+      "address": "0xDF9352c6375cc17C2aD4C6F7D6B4ff7505D3F052",
+      "implementation": "0xfE1129919A8B93CBf276ea981733625dbf4dA5c2",
       "symbol": "DCHAT"
     },
     "DGovToken": {
-      "address": "0x99Af6047482554dfC150De94582fBAA52a00596A",
+      "address": "0x94f617f06156e74b94d6C45c1A021C13aF017Da7",
+      "implementation": "0x99a1b9cbed22385f54929e56e0338be9f21a2066",
       "symbol": "DGOV"
     },
     "DividendPool": {
-      "address": "0xC9aCAf89231ADdEF53087F7670E4b22Ff1FB573B"
+      "address": "0xE657FfCeF0DDDec099Ea5B072eA3109A6B1386b5",
+      "implementation": "0x7861F9Dd05c85F997095227D61A3c4420597904A"
     },
     "DGovGovernance": {
-      "address": "0x1A38ee6C8Cf505d6404aF6CF7843513B4B99d9E1"
+      "address": "0x2f1d4cA83CF23137F3F27895185eB7fecEB24cB6",
+      "implementation": "0xbe33f7826cc7e749e2fc94a7eb59710e199e4e90"
     }
   },
   "collateral": {
     "USDC": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
     "USDT": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"
+  },
+  "previousDeploy": {
+    "version": "5.2",
+    "timestamp": "2026-03-19T20:06:17.859Z",
+    "status": "DEPRECATED",
+    "addresses": {
+      "DChatStablecoin": "0xECC263f838B99f21432898200fb2d34D103253Eb",
+      "DGovToken": "0x99Af6047482554dfC150De94582fBAA52a00596A",
+      "DividendPool": "0xC9aCAf89231ADdEF53087F7670E4b22Ff1FB573B",
+      "DGovGovernance": "0x1A38ee6C8Cf505d6404aF6CF7843513B4B99d9E1"
+    }
   },
   "config": {
     "founderAddress": "0x5a37daD4eE116380BF4008A94E5b433ae32406F6",
